@@ -1,0 +1,24 @@
+node_modules/
+.pnpm-store/
+.pnpm/
+.pnpm-cache/
+work/*.log
+work/*.err
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+uploads/
+__pycache__/
+.pytest_cache/
+.venv/
+*.py[cod]
+services/ml/models/*.joblib
+services/ml/data/*.csv
+!services/ml/data/.gitkeep
+apps/dashboard/.streamlit/secrets.toml
+
+# Reference documents are local only (not for GitHub)
+_local_refs/
+

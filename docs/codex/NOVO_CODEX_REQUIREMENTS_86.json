@@ -1,0 +1,655 @@
+{
+  "project": "NOVO Business Centre x Asah 2026",
+  "group_id": "A26-CS225",
+  "baseline_zip": "NOVO-Business-Centre-portable-2026-10-25.zip",
+  "documents": {
+    "prd": "PRD_NOVO_Business_Centre_Asah_A26-CS225_v4_Main_dan_Side_Quest.docx",
+    "original_prd": "PRD Novo.pdf",
+    "official_quest": "[Asah 2026] Checklist Tech Stack(2).xlsx",
+    "integrated_quest": "Tech_Stack_NOVO_Asah_A26-CS225_v4_Main_Side_Quest_Lengkap.xlsx",
+    "playbook": "Asah_2026_Capstone_Playbook_Part_1_Teks(1).docx"
+  },
+  "status_policy": "unverified means not yet independently checked. Update only with executable evidence and user review.",
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "area": "Authentication",
+      "priority": "Must",
+      "requirement": "Login/logout dan session persisten",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-002",
+      "area": "RBAC",
+      "priority": "Must",
+      "requirement": "Validasi role/permission & business-unit scope di server",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-003",
+      "area": "Master Data",
+      "priority": "Must",
+      "requirement": "CRUD Student/Teacher/Employee",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-004",
+      "area": "Master Data Excel",
+      "priority": "Must",
+      "requirement": "Download template + impor Excel",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-005",
+      "area": "Membership",
+      "priority": "Must",
+      "requirement": "Cooperative membership & eligibility",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-006",
+      "area": "SO Store",
+      "priority": "Must",
+      "requirement": "POS, inventory, payment, receipt, history, stock movement",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-007",
+      "area": "SO Shuttle",
+      "priority": "Must",
+      "requirement": "Subscription, billing, payment, settlement, reporting",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-008",
+      "area": "Attachments",
+      "priority": "Must",
+      "requirement": "Upload/download persisten terotorisasi",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-009",
+      "area": "SO Catering",
+      "priority": "Next",
+      "requirement": "Vendor, paket, peserta, fee, invoice, payment, rekonsiliasi",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-010",
+      "area": "SO Funding",
+      "priority": "Next",
+      "requirement": "Kategori/akun/tabungan, ledger, saldo, restricted fund",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-011",
+      "area": "SO Financing",
+      "priority": "Next",
+      "requirement": "PR, approval, procurement, HPP, BAST, receivable, payment",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-012",
+      "area": "SIMS API",
+      "priority": "Planned",
+      "requirement": "Sinkronisasi master data melalui API",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-013",
+      "area": "Reporting Core",
+      "priority": "Planned",
+      "requirement": "Laporan lintas unit dari data persisten",
+      "status": "unverified"
+    },
+    {
+      "id": "FR-014",
+      "area": "Backup/Restore",
+      "priority": "Production",
+      "requirement": "Backup/restore data & attachment",
+      "status": "unverified"
+    }
+  ],
+  "nonfunctional_requirements": [
+    {
+      "id": "NFR-001",
+      "category": "Persistence",
+      "requirement": "Data production tetap setelah restart/redeploy",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-002",
+      "category": "Availability",
+      "requirement": "NOVO tetap bekerja dengan data hasil sinkronisasi saat SIMS tidak tersedia",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-003",
+      "category": "Security",
+      "requirement": "Cegah privilege escalation melalui header/client",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-004",
+      "category": "Auditability",
+      "requirement": "Histori transaksi & perubahan penting terlacak",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-005",
+      "category": "Usability",
+      "requirement": "Tidak ada blank screen; error/empty/denied state",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-006",
+      "category": "Performance",
+      "requirement": "Kasir/list utama responsif",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-007",
+      "category": "Maintainability",
+      "requirement": "Domain modular, kontrak jelas",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-008",
+      "category": "Deployability",
+      "requirement": "Deploy VPS sekolah dengan lingkungan terpisah",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-009",
+      "category": "Backup",
+      "requirement": "DB dan lampiran memiliki prosedur backup/restore",
+      "status": "unverified"
+    },
+    {
+      "id": "NFR-010",
+      "category": "Browser",
+      "requirement": "Akses desktop/laptop dan navigasi mobile tak rusak",
+      "status": "unverified"
+    }
+  ],
+  "main_quests": [
+    {
+      "id": "FU-01",
+      "track": "Full-Stack",
+      "kind": "Main Quest",
+      "requirement": "Menyelesaikan satu masalah UMKM yang jelas untuk pengguna yang spesifik.",
+      "status": "unverified"
+    },
+    {
+      "id": "FU-02",
+      "track": "Full-Stack",
+      "kind": "Main Quest",
+      "requirement": "Memiliki minimal 2 fitur utama yang menjawab masalah tersebut.",
+      "status": "unverified"
+    },
+    {
+      "id": "FU-03",
+      "track": "Full-Stack",
+      "kind": "Main Quest",
+      "requirement": "Memberikan hasil yang sesuai dengan aksi atau input pengguna.",
+      "status": "unverified"
+    },
+    {
+      "id": "FU-04",
+      "track": "Full-Stack",
+      "kind": "Main Quest",
+      "requirement": "Memberi tanda yang jelas saat aksi berhasil, gagal, atau sedang diproses.",
+      "status": "unverified"
+    },
+    {
+      "id": "FU-05",
+      "track": "Full-Stack",
+      "kind": "Main Quest",
+      "requirement": "Mudah digunakan pelaku UMKM dengan panduan yang jelas.",
+      "status": "unverified"
+    },
+    {
+      "id": "FU-06",
+      "track": "Full-Stack",
+      "kind": "Main Quest",
+      "requirement": "Dapat diakses publik secara online melalui browser, termasuk di ponsel.",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-01",
+      "track": "Gen AI",
+      "kind": "Main Quest",
+      "requirement": "Menjelaskan permasalahan yang mau diselesaikan oleh model yang akan dibuat di README",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-02",
+      "track": "Gen AI",
+      "kind": "Main Quest",
+      "requirement": "Membangun model AI yang disesuaikan dengan keadaan data yang disediakan oleh tim Data Science.",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-03",
+      "track": "Gen AI",
+      "kind": "Main Quest",
+      "requirement": "Menerapkan tahapan preprocessing data sebelum digunakan oleh model AI.",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-04",
+      "track": "Gen AI",
+      "kind": "Izin/kebijakan",
+      "requirement": "Diperbolehkan menggunakan API data publik, sumber data, dataset, library, maupun data pribadi apa pun, dengan mencantumkan sumber setiap item yang digunakan di README.",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-05",
+      "track": "Gen AI",
+      "kind": "Main Quest",
+      "requirement": "Membangun fitur tambahan generatif AI yang memanfaatkan API model proprietary seperti ChatGPT, Gemini, dll.",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-06",
+      "track": "Gen AI",
+      "kind": "Main Quest",
+      "requirement": "Membandingkan minimal 2 model atau konfigurasi dengan metrik yang sama, lalu menuliskan tabel perbandingan dan alasan pemilihan model terbaik di README.",
+      "status": "unverified"
+    },
+    {
+      "id": "GE-07",
+      "track": "Gen AI",
+      "kind": "Main Quest",
+      "requirement": "Bekerja sama dengan anggota tim dari Full-stack dalam mengembangkan REST API menggunakan FastAPI atau Flask untuk melakukan serving model AI yang dapat diakses secara online oleh back-end aplikasi.",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-01",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Mengidentifikasi dan menganalisis bersama tim masalah UMKM yang akan diselesaikan dan menjelaskan peran data dalam solusi tersebut.",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-02",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Merumuskan pertanyaan bisnis yang dapat dijawab melalui analisis data.",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-03",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Melakukan seluruh tahapan pengolahan data (data wrangling).",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-04",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Mengolah dan menganalisis data untuk menjawab pertanyaan bisnis, disertai penjelasan proses dan hasilnya.",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-05",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Menyajikan temuan dan rekomendasi yang mudah dipahami serta relevan dengan solusi tim.",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-06",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Menyediakan data atau hasil analisis dalam bentuk yang dapat digunakan oleh anggota tim lain, disertai penjelasan cara penggunaannya.",
+      "status": "unverified"
+    },
+    {
+      "id": "DA-07",
+      "track": "Data Science",
+      "kind": "Main Quest",
+      "requirement": "Memeriksa ketepatan data dan hasil analisis sebelum digunakan dalam solusi akhir.",
+      "status": "unverified"
+    }
+  ],
+  "side_quests": [
+    {
+      "id": "SQ-01",
+      "track": "Full-Stack",
+      "requirement": "Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call",
+      "target": "Core Platform / API",
+      "feature": "Arsitektur frontend-backend terpisah",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-02",
+      "track": "Full-Stack",
+      "requirement": "Front-end dibangun dengan module bundler (seperti Vite atau Webpack)",
+      "target": "Core Platform / Web UI",
+      "feature": "Build frontend Vite",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-03",
+      "track": "Full-Stack",
+      "requirement": "Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource)",
+      "target": "Core Platform / API",
+      "feature": "REST API versi v1",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-04",
+      "track": "Full-Stack",
+      "requirement": "Antarmuka menggunakan CSS framework dan UI component modern",
+      "target": "Core Platform / UI",
+      "feature": "Design system komponen NOVO",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-05",
+      "track": "Full-Stack",
+      "requirement": "Networking calls menggunakan Axios",
+      "target": "Core Platform / Integrasi",
+      "feature": "HTTP client Axios terpusat",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-06",
+      "track": "Full-Stack",
+      "requirement": "Data tersimpan secara persisten.",
+      "target": "Core Platform / Database",
+      "feature": "Penyimpanan aktivitas persisten",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-07",
+      "track": "Full-Stack",
+      "requirement": "Layanan Gen AI diakses melalui Backend, bukan langsung dari Frontend.",
+      "target": "Reporting + AI Gateway",
+      "feature": "Proxy AI server-side",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-08",
+      "track": "Full-Stack",
+      "requirement": "Hasil tim Data Science (dasbor, prediksi, atau rekomendasi) tampil pada fitur yang relevan.",
+      "target": "Reporting Core NOVO",
+      "feature": "Visualisasi hasil Data Science",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-09",
+      "track": "Full-Stack",
+      "requirement": "Riwayat hasil layanan Gen AI tersimpan di database.",
+      "target": "Reporting / AI Audit",
+      "feature": "Riwayat inferensi AI tersimpan",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-10",
+      "track": "Full-Stack",
+      "requirement": "Backend memvalidasi data menggunakan schema validation (seperti Joi).",
+      "target": "Core Platform / API",
+      "feature": "Validasi schema input",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-11",
+      "track": "Full-Stack",
+      "requirement": "Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas.",
+      "target": "Core Platform / Reliability",
+      "feature": "Status gagal dan fallback yang jelas",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-12",
+      "track": "Full-Stack",
+      "requirement": "Mockup dibuat sebelum pengembangan.",
+      "target": "Core Platform / UX",
+      "feature": "Wireframe dan mockup pra-implementasi",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-13",
+      "track": "Full-Stack",
+      "requirement": "Antarmuka responsif dengan keputusan desain yang jelas, bukan sekadar mengikuti template umum.",
+      "target": "Core Platform / UX",
+      "feature": "Desain responsif lintas perangkat",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-14",
+      "track": "Full-Stack",
+      "requirement": "Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis).",
+      "target": "Delivery / DevOps",
+      "feature": "Jejak perubahan Git yang dapat diaudit",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-15",
+      "track": "Full-Stack",
+      "requirement": "Kontrak API atau format data disepakati dengan tim Gen AI dan Data Science sebelum pengembangan.",
+      "target": "Core Platform / API Contracts",
+      "feature": "Kontrak API lintas learning path",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-16",
+      "track": "Full-Stack",
+      "requirement": "Aplikasi di-deploy ke layanan gratis atau free tier (seperti Netlify, Render, Neon, atau Cloudflare Pages).",
+      "target": "DevOps / Deployment",
+      "feature": "Demo online free-tier terpisah",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-17",
+      "track": "Gen AI",
+      "requirement": "Memeriksa keseimbangan jumlah data antarkelas pada dataset dari tim Data Science dan menanganinya JIKA tidak seimbang, lalu menjelaskan penanganannya di README.",
+      "target": "AI Studio / Data Quality",
+      "feature": "Audit ketidakseimbangan label",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-18",
+      "track": "Gen AI",
+      "requirement": "Menerapkan teknik untuk meningkatkan kinerja model, seperti augmentasi data atau penyetelan hyperparameter, lalu menuliskan pengaruhnya terhadap hasil model di README.",
+      "target": "AI Studio / Training",
+      "feature": "Eksperimen tuning model",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-19",
+      "track": "Gen AI",
+      "requirement": "Menguji model menggunakan data uji yang disisihkan dengan metrik yang sesuai dengan jenis tugasnya, seperti F1-score untuk klasifikasi atau precision@k untuk rekomendasi, lalu menuliskan hasilnya di README.",
+      "target": "AI Studio / Evaluation",
+      "feature": "Evaluasi held-out set",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-20",
+      "track": "Gen AI",
+      "requirement": "Melatih model tambahan yang melengkapi solusi, misalnya model klasifikasi sentimen ulasan pelanggan dengan minimal 2 kelas, yaitu positif dan negatif. Hasilnya dapat ditampilkan di aplikasi web tim atau di dasbor tim Data Science.",
+      "target": "Customer Feedback / AI",
+      "feature": "Model sentimen komentar layanan",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-21",
+      "track": "Gen AI",
+      "requirement": "Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate).",
+      "target": "Customer Support / Knowledge",
+      "feature": "Asisten pengetahuan koperasi berbasis RAG",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-22",
+      "track": "Gen AI",
+      "requirement": "Menjadikan model AI yang dilatih di Main Quest sebagai model klasifikasi intent dengan minimal 4 intent, seperti tanya produk, pemesanan, keluhan, dan lainnya. Hasil klasifikasi dipakai untuk mengarahkan pertanyaan ke alur yang sesuai, misalnya pertanyaan produk dijawab oleh sistem RAG dan keluhan diteruskan ke pemilik usaha.",
+      "target": "Customer Support / AI Routing",
+      "feature": "Pengarah intent minimal empat kelas",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-23",
+      "track": "Gen AI",
+      "requirement": "Menyusun prompt terstruktur (template, few-shot) agar hasil konsisten dengan gaya bahasa usaha.",
+      "target": "AI Generatif / Prompting",
+      "feature": "Prompt template konsisten",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-24",
+      "track": "Gen AI",
+      "requirement": "Membatasi chatbot agar menolak pertanyaan di luar konteks usaha dengan sopan, lalu mengujinya menggunakan minimal 10 pertanyaan di luar konteks dan menuliskan hasilnya di README.",
+      "target": "Customer Support / AI Safety",
+      "feature": "Pembatasan chatbot di luar konteks",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-25",
+      "track": "Gen AI",
+      "requirement": "Menyepakati kontrak API bersama tim Full-stack, meliputi endpoint, format request/response, dan kode error, sebelum pengembangan dimulai.",
+      "target": "AI Serving / API Contract",
+      "feature": "Dokumen kontrak endpoint inferensi",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-26",
+      "track": "Gen AI",
+      "requirement": "Menangani input yang tidak valid dan kegagalan layanan AI, termasuk saat API model generatif lambat atau mencapai batas kuota gratis, dengan pesan yang jelas bagi pengguna.",
+      "target": "AI Serving / Reliability",
+      "feature": "Timeout/quota/error AI",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-27",
+      "track": "Gen AI",
+      "requirement": "Mengintegrasikan solusi ke kanal yang dipakai UMKM, seperti Telegram atau WhatsApp. Untuk WhatsApp, tim dapat menggunakan nomor uji gratis dari WhatsApp Cloud API.",
+      "target": "Customer Service / Channels",
+      "feature": "WhatsApp/Telegram konektor percobaan",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-28",
+      "track": "Gen AI",
+      "requirement": "Menyediakan dokumentasi API yang dapat dicoba langsung, seperti Swagger atau OpenAPI.",
+      "target": "AI Serving / Developer Experience",
+      "feature": "Swagger/OpenAPI interaktif",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-29",
+      "track": "Data Science",
+      "requirement": "Mengembangkan dasbor interaktif menggunakan Streamlit atau teknologi visualisasi lain yang sesuai.",
+      "target": "Reporting Core / DS Dashboard",
+      "feature": "Dashboard analisis interaktif",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-30",
+      "track": "Data Science",
+      "requirement": "Menampilkan indikator bisnis dan menyediakan filter yang relevan untuk membantu pengguna memahami kondisi bisnis.",
+      "target": "Reporting Core / BI",
+      "feature": "KPI serta filter per unit/periode",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-31",
+      "track": "Data Science",
+      "requirement": "Menyediakan pembaruan data melalui unggahan file atau koneksi ke sumber data.",
+      "target": "Reporting Core / Data Ingestion",
+      "feature": "Pembaruan dataset tervalidasi",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-32",
+      "track": "Data Science",
+      "requirement": "Memprioritaskan penggunaan data primer yang diperoleh langsung dari UMKM. Jika data primer tidak tersedia atau belum mencukupi, boleh menggunakan data dummy atau data publik yang sesuai dengan karakteristik data asli.",
+      "target": "Data Governance / Acquisition",
+      "feature": "Prioritas data UMKM & fallback aman",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-33",
+      "track": "Data Science",
+      "requirement": "Mengintegrasikan dasbor ke aplikasi web bersama tim Full-stack.",
+      "target": "Reporting Core / Integration",
+      "feature": "Dashboard DS di aplikasi NOVO",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-34",
+      "track": "Data Science",
+      "requirement": "Menyepakati kebutuhan dan format data bersama tim Gen AI. Jika data primer tidak mencukupi, boleh menggunakan  data dummy atau data publik. Penggunaan data dummy atau data publik harus diberi label yang jelas, disertai penjelasan sumber atau cara pembuatannya serta keterbatasan penggunaannya.",
+      "target": "Data Platform / AI Contract",
+      "feature": "Kontrak dataset DS → Gen AI",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-35",
+      "track": "Data Science",
+      "requirement": "Melakukan pelabelan, transformasi, atau feature engineering sesuai kebutuhan model.",
+      "target": "Data Platform / Feature Store",
+      "feature": "Pelabelan & transformasi untuk AI",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-36",
+      "track": "Data Science",
+      "requirement": "Menyusun kamus data (data dictionary) atau penjelasan isi dataset agar mudah digunakan.",
+      "target": "Data Platform / Metadata",
+      "feature": "Kamus data yang dapat diaudit",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-37",
+      "track": "Data Science",
+      "requirement": "Menyiapkan pembagian data yang sesuai untuk training dan testing model serta mencegah kebocoran data.",
+      "target": "Data Platform / ML Validation",
+      "feature": "Split data antikebocoran",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-38",
+      "track": "Data Science",
+      "requirement": "Mengembangkan model classification, regression, forecasting, dan model lain yang sesuai kebutuhan fitur.",
+      "target": "Advanced Analytics / Prediction",
+      "feature": "Eksperimen prediksi stok atau beban layanan",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-39",
+      "track": "Data Science",
+      "requirement": "Melakukan feature engineering  dan mengevaluasi pengaruhnya terhadap kinerja model.",
+      "target": "Advanced Analytics / Feature Evaluation",
+      "feature": "Uji pengaruh rekayasa fitur",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-40",
+      "track": "Data Science",
+      "requirement": "Menguji model pada data yang tidak digunakan untuk training dengan pembagian data dan metrik evaluasi yang sesuai.",
+      "target": "Advanced Analytics / Model Testing",
+      "feature": "Uji model pada data unseen",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-41",
+      "track": "Data Science",
+      "requirement": "Membandingkan hasil model dan menjelaskan keterbatasannya jika menguji lebih dari satu model.",
+      "target": "Advanced Analytics / Model Comparison",
+      "feature": "Bandingkan model DS dan batasan",
+      "status": "unverified"
+    },
+    {
+      "id": "SQ-42",
+      "track": "Data Science",
+      "requirement": "Mengintegrasikan hasil prediksi ke aplikasi web bersama tim Full-stack.",
+      "target": "Reporting Core / Prediction UI",
+      "feature": "Visualisasi prediksi dalam NOVO",
+      "status": "unverified"
+    }
+  ]
+}

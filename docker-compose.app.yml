@@ -1,0 +1,48 @@
+name: novo-app
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://novo:novo_dev_password@postgres:5432/novo?schema=public
+      ML_SERVICE_URL: http://ml:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ml:
+        condition: service_started
+    ports:
+      - "4000:4000"
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+  ml:
+    build:
+      context: ./services/ml
+    environment:
+      NOVO_MODEL_DIR: /app/models
+      NOVO_CHROMA_DIR: /app/models/chroma
+    ports:
+      - "8000:8000"
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: novo
+      POSTGRES_PASSWORD: novo_dev_password
+      POSTGRES_DB: novo
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U novo -d novo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - novo-postgres:/var/lib/postgresql/data
+volumes:
+  novo-postgres:
