@@ -1,7 +1,7 @@
 import { Bot, Bus, Landmark, LayoutDashboard, UsersRound, LogOut, Menu, ShoppingBasket, Store, Utensils, WalletCards, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { api, readSession, storeSession, type Session } from "./api";
+import { api, clearActiveSession, setActiveSession, type Session } from "./api";
 import { AccessPage } from "./auth";
 import { AssistantPage, CateringPage, DashboardPage, FinancingPage, FundingPage, MasterDataPage, PosPage, PurchasingPage, ShuttlePage } from "./pages";
 
@@ -43,8 +43,29 @@ function Shell({ session, onSignOut }: { session: Session; onSignOut: () => void
 }
 
 export default function App() {
-  const [session, setSession] = useState<Session | null>(readSession());
-  const signIn = (next: Session) => { storeSession(next); setSession(next); };
-  const signOut = () => { const active = session; storeSession(null); setSession(null); if (active) void api("/auth/logout", { method: "POST" }, active.token).catch(() => undefined); };
-  return session ? <Shell session={session} onSignOut={signOut} /> : <AccessPage onSuccess={signIn} />;
+  const [session, setSession] = useState<Session | null>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    void api<Session>("/me").then((next) => {
+      if (!current) return;
+      setActiveSession(next);
+      setSession(next);
+    }).catch(() => {
+      if (!current) return;
+      clearActiveSession();
+      setSession(null);
+    }).finally(() => { if (current) setReady(true); });
+    return () => { current = false; };
+  }, []);
+
+  const signIn = (next: Session) => { setActiveSession(next); setSession(next); };
+  const signOut = async () => {
+    try { await api<void>("/auth/logout", { method: "POST" }); }
+    finally { clearActiveSession(); setSession(null); }
+  };
+
+  if (!ready) return <main className="content" aria-live="polite">Memeriksa sesi aman…</main>;
+  return session ? <Shell session={session} onSignOut={() => { void signOut(); }} /> : <AccessPage onSuccess={signIn} />;
 }

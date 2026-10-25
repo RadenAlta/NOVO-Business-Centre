@@ -3,7 +3,6 @@ import bcrypt from "bcryptjs";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
 import helmet from "helmet";
-import jwt from "jsonwebtoken";
 import multer from "multer";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
@@ -11,7 +10,7 @@ import path from "node:path";
 
 import { z } from "zod";
 import { audit } from "./audit.js";
-import { authenticate, clearSessionCookie, requireRoles, setSessionCookie, signToken } from "./auth.js";
+import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, requireRoles, requireTrustedOrigin, revokeSessionForLogout, rotateCsrfToken, setSessionCookie } from "./auth.js";
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
@@ -48,7 +47,7 @@ const decimalJson = <T>(value: T): T => JSON.parse(JSON.stringify(value, (_key, 
 
 app.disable("x-powered-by");
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(cors({ origin: env.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PATCH", "DELETE"], maxAge: 600 }));
+app.use(cors({ origin: env.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], allowedHeaders: ["Content-Type", "X-Novo-Csrf"], maxAge: 600 }));
 app.use(express.json({ limit: "1mb" }));
 
 
@@ -56,7 +55,7 @@ app.get("/healthz", (_request, response) => response.json({ status: "ok" }));
 
 api.get("/healthz", (_request, response) => response.json({ status: "ok", service: "novo-api" }));
 
-api.post("/auth/bootstrap", asyncRoute(async (request, response) => {
+api.post("/auth/bootstrap", requireTrustedOrigin, asyncRoute(async (request, response) => {
   const input = z.object({
     tenantName: z.string().trim().min(2).max(120),
     slug: z.string().trim().regex(/^[a-z0-9-]{3,50}$/),
@@ -78,27 +77,38 @@ api.post("/auth/bootstrap", asyncRoute(async (request, response) => {
   if (!user) throw new HttpError(500, "BOOTSTRAP_FAILED", "Owner account could not be created.");
   const auth = { id: user.id, tenantId: tenant.id, email: user.email, name: user.name, role: user.role } as AuthContext;
   await audit(auth, "bootstrap", "Tenant", tenant.id, { slug: tenant.slug });
-  const token = signToken(auth); setSessionCookie(response, token); response.status(201).json({ token, user: auth, tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug } });
+  const session = await createBrowserSession(auth);
+  setSessionCookie(response, session.token);
+  response.status(201).json({ user: auth, tenant: { id: tenant.id, name: tenant.name, slug: tenant.slug }, csrfToken: session.csrfToken });
 }));
 
-api.post("/auth/login", asyncRoute(async (request, response) => {
+api.post("/auth/login", requireTrustedOrigin, asyncRoute(async (request, response) => {
   const input = z.object({ tenantSlug: z.string().trim().min(3), email: z.string().email(), password: z.string().min(1) }).parse(request.body);
   const user = await prisma.user.findFirst({ where: { email: input.email.toLowerCase(), active: true, tenant: { slug: input.tenantSlug } }, include: { tenant: true } });
   if (!user || !(await bcrypt.compare(input.password, user.passwordHash))) {
     throw new HttpError(401, "INVALID_CREDENTIALS", "Email, password, or workspace is incorrect.");
   }
   const auth = { id: user.id, tenantId: user.tenantId, email: user.email, name: user.name, role: user.role } as AuthContext;
-  const token = signToken(auth); setSessionCookie(response, token); response.json({ token, user: auth, tenant: { id: user.tenant.id, name: user.tenant.name, slug: user.tenant.slug } });
+  const session = await createBrowserSession(auth);
+  setSessionCookie(response, session.token);
+  response.json({ user: auth, tenant: { id: user.tenant.id, name: user.tenant.name, slug: user.tenant.slug }, csrfToken: session.csrfToken });
+}));
+
+api.post("/auth/logout", requireTrustedOrigin, asyncRoute(async (request, response) => {
+  await revokeSessionForLogout(request);
+  clearSessionCookie(response);
+  response.status(204).end();
 }));
 
 api.use(authenticate);
-
-api.post("/auth/logout", (request, response) => { clearSessionCookie(response); response.status(204).end(); });
+api.use(requireCsrf);
 
 api.get("/me", asyncRoute(async (request, response) => {
-  const user = await prisma.user.findFirst({ where: { id: me(request).id, tenantId: me(request).tenantId }, select: { id: true, email: true, name: true, role: true, tenant: { select: { id: true, name: true, slug: true } } } });
+  const auth = me(request);
+  const user = await prisma.user.findFirst({ where: { id: auth.id, tenantId: auth.tenantId, active: true }, select: { id: true, email: true, name: true, role: true, tenant: { select: { id: true, name: true, slug: true } } } });
   if (!user) throw new HttpError(401, "UNAUTHENTICATED", "Your account is no longer available.");
-  response.json(user);
+  const csrfToken = await rotateCsrfToken((request as AuthenticatedRequest).session.id);
+  response.json({ user: { ...user, tenantId: auth.tenantId }, tenant: user.tenant, csrfToken });
 }));
 
 const masterDataInput = z.object({
@@ -469,7 +479,6 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   if (error instanceof z.ZodError) return response.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Check the submitted fields.", details: error.flatten() } });
   if (error instanceof HttpError) return response.status(error.status).json({ error: { code: error.code, message: error.message, details: error.details } });
   if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "P2002") return response.status(409).json({ error: { code: "DUPLICATE_RECORD", message: "A record with that identifier already exists." } });
-  if (error instanceof jwt.JsonWebTokenError) return response.status(401).json({ error: { code: "UNAUTHENTICATED", message: "Your session is invalid." } });
   return response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } });
 });
 
