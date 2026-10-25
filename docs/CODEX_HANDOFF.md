@@ -1,80 +1,76 @@
-# CODEX Handoff — Sprint 01 Foundation / CI correction
+# CODEX Handoff — Sprint 01 Foundation / pnpm build-script correction
 
 ## Current checkpoint
 
 - Branch: `codex/sprint-01-foundation`
-- Prior committed checkpoint: `8075828` — `docs: complete Sprint 01 foundation audit`
 - Existing pull request to update: [PR #1](https://github.com/RadenAlta/NOVO-Business-Centre/pull/1) (`codex/sprint-01-foundation` → `main`)
-- Scope: fix CI configuration and correct Sprint 01 audit evidence only. Sprint 02 and product feature work have not started.
+- Baseline correction commit: `ba243eb` — `ci: use CPU-only ML dependencies`
+- Scope: correct pnpm 11 lifecycle-script approval for API/Web CI and keep Sprint 01 traceability factual. No Sprint 02 work or new product feature is included.
 
-## Confirmed GitHub Actions root causes
+## Confirmed latest GitHub Actions evidence
 
-The two GitHub Actions logs reviewed from 25 October 2026 show:
+The reviewed push and pull-request logs show:
 
-1. `api-and-web` stopped in `pnpm/action-setup@v4` because two pnpm versions were declared: workflow `11` and root `packageManager` `pnpm@11.25.0`.
-2. `ml` stopped during `pip install -r requirements.txt` with `OSError: [Errno 122] Disk quota exceeded`. `sentence-transformers` caused a normal PyPI PyTorch resolution that downloaded CUDA/NVIDIA/Triton wheels. Pytest did **not** start.
+| Job | Push | Pull request | Actual result |
+| --- | --- | --- | --- |
+| `ml` | PASS | PASS | The earlier CPU-only PyTorch correction removed the CUDA/NVIDIA disk-quota failure. Do not modify this job in this correction. |
+| `api-and-web` | FAIL | FAIL | `pnpm install --frozen-lockfile` stops with `ERR_PNPM_IGNORED_BUILDS` for `@prisma/client@6.19.3`, `@prisma/engines@6.19.3`, `esbuild@0.28.2`, and `prisma@6.19.3`. Prisma generation, build, and tests did not run. |
 
-Those failures are CI configuration/resource failures. They do not prove the application build, tests, or ML model behavior passed or failed.
+The previous pnpm version conflict is not the current failure. The current failure is the four-package lifecycle/build-script policy.
 
-## Changes ready for review
+## Change prepared in this checkpoint
 
-- `.github/workflows/ci.yml`
-  - Removed the conflicting `with: version: 11` block. `pnpm/action-setup@v4` now uses the sole root declaration `pnpm@11.25.0`.
-  - Added a CPU-only PyTorch installation from `https://download.pytorch.org/whl/cpu` before ML requirements.
-  - Asserts `torch.version.cuda is None`; retains `sentence-transformers`, `chromadb`, FastAPI, training tests, and PR-triggered CI.
-  - Imports RAG dependencies and runs `python -m pytest -q` after installation.
-- `services/ml/Dockerfile`
-  - Uses the same CPU-only PyTorch installation and CUDA assertion before application requirements.
-- `services/ml/tests/test_rag.py`
-  - Adds a no-network test for lexical retrieval and the retrieval-only answer fallback.
-- `services/ml/scripts/smoke_rag_embedding.py`
-  - Adds an explicit full ChromaDB/sentence-transformer smoke path. It may download the embedding model and has not run in this sandbox.
-- `services/ml/README.md`
-  - Documents the CPU-only CI behavior, lightweight test boundary and full RAG smoke command.
-- `docs/IMPLEMENTATION_STATUS.md`, `docs/QUEST-TRACEABILITY.md`, `docs/NOVO-PRD-COVERAGE.md`
-  - Corrects mismatched FR/NFR evidence and records the CI causes/fixes without claiming a green run.
+`pnpm-workspace.yaml` preserves its workspace package declarations and adds only:
 
-## Actual verification in this session
+```yaml
+allowBuilds:
+  "@prisma/client": true
+  "@prisma/engines": true
+  esbuild: true
+  prisma: true
+```
 
-| Command / check | Result |
+This is a least-privilege allowlist for the packages named by the CI log. It does not set `dangerouslyAllowAllBuilds`, disable scripts, use `pnpm approve-builds --all`, alter dependency versions, alter `pnpm-lock.yaml`, or permit a wildcard. `package.json` remains the single pnpm version source (`pnpm@11.25.0`) and `.github/workflows/ci.yml` still runs install, Prisma generation, build and test for API/Web while retaining the passing ML job.
+
+## Actual local verification
+
+| Command | Result |
 | --- | --- |
-| Bundled Python `-m compileall services/ml/app services/ml/tests` | **PASS**, exit 0. Includes the new lightweight RAG test and full-smoke script syntax is separately inspected. |
-| Bundled Python `-m pytest -q` from `services/ml` | **BLOCKED**, exit 1: `No module named pytest`; the bundled runtime has no project ML dependencies. |
-| `pnpm install --frozen-lockfile`, `pnpm db:generate`, `pnpm build`, `pnpm test`, `pnpm lint` | **BLOCKED** in this Codex sandbox by the pre-existing pnpm project-store symlink `EPERM` constraint. |
-| Docker Compose / ML container build | **BLOCKED**: Docker is unavailable in this environment. |
-| Git staging/commit in Codex | **BLOCKED**, `git add` exit 128: cannot create `.git/index.lock` (`Permission denied`). |
-| `gh pr checks 1` and `gh run list` | **BLOCKED**, exit 1: this Codex environment cannot connect to `api.github.com`; no latest remote check status was retrieved. |
-| GitHub Actions after the fix | **NOT RUN YET**: requires committing and pushing this branch to update PR #1. |
+| `pnpm install --frozen-lockfile` | **BLOCKED**, exit `-4048`: sandbox denies pnpm project-store symlink creation before dependencies/build scripts are processed. |
+| `pnpm db:generate` | **BLOCKED**, exit `1`: same sandbox symlink failure during pnpm dependency-status install. |
+| `pnpm build` | **BLOCKED**, exit `1`: same sandbox symlink failure before build execution. |
+| `pnpm test` | **BLOCKED**, exit `1`: same sandbox symlink failure before test execution. |
+| `pnpm lint` | **BLOCKED**, exit `1`: same sandbox symlink failure before lint execution. |
+| Static policy review | **PASS**: root `packageManager` is `pnpm@11.25.0`; the workflow declares no second pnpm version; allowlist has exactly the four packages from the CI error and no unsafe global option. |
+| Git staging in Codex | **BLOCKED**, git add exit 128: sandbox cannot create .git/index.lock (Permission denied). No commit or push was attempted after staging failed. |
 
-## Requirement status after evidence correction
+Because local pnpm stopped before package installation, it did not report any additional ignored-build dependency. Do not expand the allowlist without a concrete future CI error and package review.
 
-The count is unchanged: `verified` 0, `partial` 70, `blocked` 6, `not-started` 10 (total 86). Python syntax compilation is useful evidence but is not a working-behavior test, so no requirement was promoted to `verified`.
+## Requirement traceability
 
-Corrected evidence includes FR-003 through FR-011 and FR-013, plus NFR-004, NFR-009 and NFR-010. The tracker still contains each of the 86 official IDs exactly once.
+The 86 official IDs remain unchanged and each appears exactly once: `verified` 0, `partial` 70, `blocked` 6, `not-started` 10. The two passing ML CI jobs do not by themselves demonstrate an end-user behavior, so no requirement was promoted to `verified`.
 
-## Remaining review gates
+## Next review gate
 
-1. Commit/push the prepared changes on the existing branch and confirm PR #1 starts a new Actions run.
-2. Confirm the pnpm setup phase no longer reports “Multiple versions of pnpm specified.”
-3. Confirm CPU-only PyTorch assertion succeeds, no CUDA/NVIDIA wheel download exhausts disk, then inspect the first real `pytest` result.
-4. Run the documented full embedding/Chroma smoke command in a suitable environment before asserting full RAG verification.
-5. Do not merge PR #1 and do not begin Sprint 02 before owner review.
+Push this exact allowlist to update PR #1, then inspect both API/Web runs. Success must show that the ignored-build error is gone and must separately show whether Prisma generation, build, test, and lint pass. Do not merge PR #1 or start Sprint 02.
 
-## Safe PowerShell completion from the owner workstation
+## Safe owner PowerShell checkpoint
 
-The Codex sandbox may still reject `.git/index.lock`; this does not change the existing PR or branch. From the already-authenticated owner PowerShell, run:
+The Codex sandbox did reject `.git/index.lock` on this checkpoint; it must not be reset or cleaned. From the already-authenticated owner PowerShell:
 
 ```powershell
 Set-Location 'C:\Users\raden\dev\projects\NOVO-Business-Centre'
 git switch codex/sprint-01-foundation
 git status --short
-git add -- .github/workflows/ci.yml services/ml/Dockerfile services/ml/README.md services/ml/tests/test_rag.py services/ml/scripts/smoke_rag_embedding.py docs/IMPLEMENTATION_STATUS.md docs/QUEST-TRACEABILITY.md docs/NOVO-PRD-COVERAGE.md docs/CODEX_HANDOFF.md
+git diff --check
+git diff --stat
+git add -- pnpm-workspace.yaml docs/IMPLEMENTATION_STATUS.md docs/NOVO-PRD-COVERAGE.md docs/CODEX_HANDOFF.md
 git diff --cached --check
 git diff --cached
-git commit -m "ci: use CPU-only ML dependencies"
+git commit -m "ci: approve required pnpm build scripts"
 git push origin codex/sprint-01-foundation
 & "C:\Program Files\GitHub CLI\gh.exe" pr checks 1 --repo RadenAlta/NOVO-Business-Centre
 & "C:\Program Files\GitHub CLI\gh.exe" run list --repo RadenAlta/NOVO-Business-Centre --branch codex/sprint-01-foundation --limit 5
 ```
 
-That push updates PR #1; it does not create a new PR. If the new run fails, collect its failed log with `gh run view <RUN_ID> --repo RadenAlta/NOVO-Business-Centre --log-failed` and continue from the actual failure.
+The push updates existing PR #1 only. If API/Web fails again, obtain the real failed log with `gh run view <RUN_ID> --repo RadenAlta/NOVO-Business-Centre --log-failed` before changing the allowlist further.

@@ -130,7 +130,8 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | `pnpm db:generate` | Stopped by the same pnpm symlink preflight. | blocked by environment |
 | `pnpm build` | Stopped by the same pnpm symlink preflight. | blocked by environment |
 | `pnpm test` | Stopped by the same pnpm symlink preflight. | blocked by environment |
-| `pnpm lint` | Stopped by the same pnpm symlink preflight. | blocked by environment |
+| `pnpm lint` | Stopped by the same pnpm symlink preflight. | blocked by environment || Latest GitHub Actions `api-and-web` (push + PR) | FAIL: `ERR_PNPM_IGNORED_BUILDS` for exactly `@prisma/client`, `@prisma/engines`, `prisma`, and `esbuild`; this policy change awaits a new run. | CI evidence |
+| Latest GitHub Actions `ml` (push + PR) | PASS according to the reviewed latest logs after the CPU-only PyTorch correction. | CI evidence |
 | Bundled Python: `-m compileall services/ml/app services/ml/tests` | PASS (exit 0); all ML modules and both test files compiled on 25 October 2026. | syntax only |
 | Bundled Python: `-m pytest -q` in `services/ml` | BLOCKED (exit 1): bundled runtime has no `pytest`; ML dependencies were not installed locally. | blocked by environment |
 | `docker compose config` | Docker command was not installed/available. | blocked by environment |

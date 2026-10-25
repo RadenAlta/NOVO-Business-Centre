@@ -32,11 +32,14 @@ The audit preserves the original NOVO modules—Store, Shuttle, Catering, Fundin
 ## What a later sprint must prove
 
 Use a normal local/CI runtime to run install, database generation/migration, API/web build/lint/test, Python compilation/pytest and at least one tenant/RBAC negative test. Only then promote individual rows from `partial` or `blocked` to `verified` with the exact evidence.
-## CI root cause and correction — awaiting a new GitHub Actions run
 
-The failed GitHub Actions logs from 25 October 2026 establish two environment/configuration causes, not application-test results:
+## CI evidence and pnpm build-script correction
 
-- `api-and-web`: `pnpm/action-setup@v4` specified version `11` while the root `packageManager` declared `pnpm@11.25.0`.
-- `ml`: normal PyPI resolution through `sentence-transformers` installed CUDA/NVIDIA/Triton packages until the runner returned `Disk quota exceeded`; pytest never began.
+The reviewed latest GitHub Actions logs establish the following actual outcomes:
 
-The workflow now takes pnpm only from the root `packageManager`, installs CPU-only PyTorch from the official PyTorch CPU index, asserts `torch.version.cuda is None`, retains ChromaDB and sentence-transformers, imports those RAG dependencies, and runs the ML training plus lightweight-RAG suite. The complete ChromaDB/embedding smoke path is documented at `services/ml/scripts/smoke_rag_embedding.py` but has not run. No CI job is claimed green until PR #1 receives a new successful run.
+- Both `ml` jobs (push and pull request) **PASS** after the earlier CPU-only PyTorch correction. This confirms only the CI ML job; it does not promote any product or RAG requirement to `verified`.
+- Both latest `api-and-web` jobs fail at `pnpm install --frozen-lockfile` with `ERR_PNPM_IGNORED_BUILDS` for `@prisma/client@6.19.3`, `@prisma/engines@6.19.3`, `prisma@6.19.3`, and `esbuild@0.28.2`. No Prisma generation, application build, or API/web test ran after that failure.
+
+`pnpm-workspace.yaml` now has a reviewed, exact `allowBuilds` policy for only those four required packages. It preserves the workspace package list, pnpm 11.25.0 root source of truth, frozen-lockfile CI step, and meaningful Prisma/build/test stages. It does not use `dangerouslyAllowAllBuilds`, `--ignore-scripts`, `pnpm approve-builds --all`, a wildcard, or a lockfile update.
+
+The local Codex pnpm commands still stop earlier with a sandbox project-store symlink `EPERM`, so no additional ignored-build package could be observed locally. The next push to PR #1 must provide the first CI evidence for this exact allowlist change.
