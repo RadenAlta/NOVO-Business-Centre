@@ -33,13 +33,10 @@ The audit preserves the original NOVO modules—Store, Shuttle, Catering, Fundin
 
 Use a normal local/CI runtime to run install, database generation/migration, API/web build/lint/test, Python compilation/pytest and at least one tenant/RBAC negative test. Only then promote individual rows from `partial` or `blocked` to `verified` with the exact evidence.
 
-## CI evidence and pnpm build-script correction
+## CI evidence and test-baseline correction
 
-The reviewed latest GitHub Actions logs establish the following actual outcomes:
+The supplied current PR log is GitHub Actions run `40155523749` (`pull_request`, SHA `ca876c3…`). It shows that `pnpm install --frozen-lockfile`, Prisma generation and the monorepo build completed far enough for the workflow to run `pnpm test`. The test stage then failed because `@novo/contracts` ran `vitest run` with no test files. This supersedes the previous ignored-build issue as the current API/Web blocker.
 
-- Both `ml` jobs (push and pull request) **PASS** after the earlier CPU-only PyTorch correction. This confirms only the CI ML job; it does not promote any product or RAG requirement to `verified`.
-- Both latest `api-and-web` jobs fail at `pnpm install --frozen-lockfile` with `ERR_PNPM_IGNORED_BUILDS` for `@prisma/client@6.19.3`, `@prisma/engines@6.19.3`, `prisma@6.19.3`, and `esbuild@0.28.2`. No Prisma generation, application build, or API/web test ran after that failure.
+Contracts now has deterministic runtime tests for the API prefix, the exact unique operator-role list, and the absence of a `STUDENT` operator role. Web now has deterministic mocked-fetch tests for credentialed JSON requests, HTTP 204 handling and API-error propagation. Existing API helper tests remain in place. No test script was removed and neither Vitest nor its no-test failure behavior was disabled.
 
-`pnpm-workspace.yaml` now has a reviewed, exact `allowBuilds` policy for only those four required packages. It preserves the workspace package list, pnpm 11.25.0 root source of truth, frozen-lockfile CI step, and meaningful Prisma/build/test stages. It does not use `dangerouslyAllowAllBuilds`, `--ignore-scripts`, `pnpm approve-builds --all`, a wildcard, or a lockfile update.
-
-The local Codex pnpm commands still stop earlier with a sandbox project-store symlink `EPERM`, so no additional ignored-build package could be observed locally. The next push to PR #1 must provide the first CI evidence for this exact allowlist change.
+Both ML checks passed on SHA `ca876c3` according to the reviewed logs and were not changed. The supplied push failure did not include a current error log, so no claim is made about its cause. The new Contracts/Web tests have passed source syntax checks only in this sandbox; their Vitest execution and the next CI run remain required before any feature requirement is marked verified.
