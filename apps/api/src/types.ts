@@ -9,4 +9,7 @@ export type AuthContext = {
   role: UserRole;
 };
 
-export type AuthenticatedRequest = Request & { auth: AuthContext };
+export type AuthenticatedRequest = Request & {
+  auth: AuthContext;
+  session: { id: string; csrfTokenHash: string };
+};

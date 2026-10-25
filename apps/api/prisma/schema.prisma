@@ -102,6 +102,7 @@ model Tenant {
   audits                AuditLog[]
   aiInteractions        AiInteraction[]
   knowledgeDocuments    KnowledgeDocument[]
+  sessions              UserSession[]
 }
 
 model User {
@@ -120,10 +121,27 @@ model User {
   sales        Sale[]              @relation("CashierSales")
   audits       AuditLog[]          @relation("ActorAudits")
   attachments  Attachment[]        @relation("UploaderAttachments")
+  sessions     UserSession[]
   @@unique([tenantId, email])
   @@index([tenantId, role])
 }
 
+model UserSession {
+  id            String   @id @default(cuid())
+  userId        String
+  tenantId      String
+  tokenHash     String   @unique
+  csrfTokenHash String
+  csrfToken     String?
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([userId, tenantId, expiresAt])
+  @@index([tenantId, expiresAt])
+}
 model CooperativeMember {
   id                    String                  @id @default(cuid())
   tenantId              String

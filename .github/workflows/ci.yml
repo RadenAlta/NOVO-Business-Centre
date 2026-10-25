@@ -5,6 +5,25 @@ on:
 jobs:
   api-and-web:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: novo
+          POSTGRES_PASSWORD: novo_ci_password
+          POSTGRES_DB: novo_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U novo -d novo_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://novo:novo_ci_password@localhost:5432/novo_ci?schema=public
+      WEB_ORIGIN: http://localhost:5173
+      UPLOAD_DIR: /tmp/novo-api-test-uploads
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -14,8 +33,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
+      - run: pnpm --filter @novo/api exec prisma migrate deploy
       - run: pnpm build
       - run: pnpm test
+      - run: pnpm lint
   ml:
     runs-on: ubuntu-latest
     defaults:

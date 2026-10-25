@@ -1,44 +1,63 @@
-# CODEX Handoff — Sprint 01 Foundation (final review)
+# CODEX Handoff — Sprint 02 / PR #2 final CI evidence
 
 ## Scope and Git checkpoint
 
 - Repository: `RadenAlta/NOVO-Business-Centre` (private).
-- Pull request: [PR #1](https://github.com/RadenAlta/NOVO-Business-Centre/pull/1), `codex/sprint-01-foundation` → `main`.
-- Reviewed application and documentation commit: `52103320ef5904ef56ac6cf3185270a22c57534f`.
-- Scope: source audit, 86-requirement traceability, CI repairs, CPU-only ML installation, and baseline Contracts/Web/ML tests. No Sprint 02 authentication changes have started.
+- Branch and Draft PR: `codex/sprint-02-auth-security` → `main`, [PR #2](https://github.com/RadenAlta/NOVO-Business-Centre/pull/2). Do **not** merge automatically.
+- Final reviewed PR head: `91b0a23bc49b0d137a70fb096594e5933649ed9b` (`test: correct CSRF assertion after unauthorized response`).
+- Confirmed current CI evidence, reported from GitHub CLI: push `40196407790` and PR `40196411378` both completed with API/Web and ML checks passing (4/4). The required API/Web workflow runs disposable PostgreSQL 16, Prisma migration, build, all workspace Vitest suites, and lint in order. Sprint 03 is out of scope.
 
-## GitHub Actions result for `5210332`
+## Root causes and corrections
 
-The repository owner supplied `gh run list` and `gh pr checks 1 --watch` output on 25 October 2026. Both GitHub Actions workflow runs completed successfully:
+| Finding | Cause at `2645d05` | Correction in this workspace |
+| --- | --- | --- |
+| Web TS6133 | `DemandForecast` accepted `session` but did not read it. | Remove the unused prop and caller binding without changing forecast input. |
+| API TS2345 | `request.agent(app)` inferred `TestAgent<Test>` was incompatible with `request.SuperAgentTest` in the test helper. | Type `login` with `ReturnType<typeof request.agent>`; cookie-persisting agent behavior is unchanged. |
+| `/me` CSRF race | Each GET rotated `csrfTokenHash`; overlapping reads could invalidate an earlier response. | Add migration `202610250003_stable_csrf_token`, persist one non-authentication CSRF value per session, and atomically backfill legacy null values. Raw session tokens remain SHA-256-hashed only. |
+| React Query cache leak | Keys were tenant-only and the app-level QueryClient outlived user sessions. | Scope keys by tenant/user/role, pass query abort signals, and cancel/remove all protected queries on sign-in, logout and unauthentication. |
+| Logout UX | A `finally` cleared UI state even when server revocation/network failed. | Confirm logout before clearing state; 401 means already invalidated, while network/5xx retains state and shows an actionable retry message. |
+| Web logout assertion | The 401 regression expected JSON `Content-Type` on a bodyless `POST /auth/logout`, although the client correctly sends no body or content type. | Assert the intended request contract: credentialed POST, CSRF used before the 401, then no CSRF and no JSON content type after the 401. Production client code is unchanged. |
 
-| Trigger | Run ID | `api-and-web` | `ml` |
-| --- | --- | --- | --- |
-| `push` | `40156431701` | **PASS** | **PASS** |
-| `pull_request` | `40156434593` | **PASS** | **PASS** |
+## Changed paths
 
-**Result: 4/4 checks passing, 0 failing, 0 pending.** This establishes that the configured CI jobs pass for the referenced commit. It is not evidence that all 86 product requirements work end-to-end, or that production deployment, database migrations, browser E2E, or full vector-based RAG have been tested.
+- API/database: `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/202610250003_stable_csrf_token/migration.sql`, `apps/api/src/auth.ts`, `apps/api/src/app.ts`, `apps/api/src/security.integration.test.ts`.
+- Web: `apps/web/src/App.tsx`, `apps/web/src/pages.tsx`, `apps/web/src/session-cache.ts`, `apps/web/src/logout.ts`, `apps/web/src/api.test.ts`, and their regression tests.
+- Documentation: `docs/SECURITY.md`, `docs/API-CONTRACT.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/NOVO-PRD-COVERAGE.md`, `docs/QUEST-TRACEABILITY.md`, this handoff.
 
-## Changes included in PR #1
+## Regression coverage added
 
-- `.github/workflows/ci.yml`: use the root `packageManager` version of pnpm; install CPU-only PyTorch before ML requirements and assert that CUDA is absent.
-- `pnpm-workspace.yaml`: explicitly allow install/build scripts for only `@prisma/client`, `@prisma/engines`, `prisma`, and `esbuild`.
-- `services/ml/Dockerfile` and `services/ml/README.md`: document and use the CPU-only install path.
-- `services/ml/tests/test_rag.py`: lightweight lexical retrieval and provider-less fallback tests.
-- `services/ml/scripts/smoke_rag_embedding.py`: explicit, separate Chroma/embedding smoke test; **not run as part of CI**, and may download a model.
-- `packages/contracts/src/index.test.ts`: test API prefix, operator roles, uniqueness, and exclusion of the `STUDENT` role.
-- `apps/web/src/api.test.ts`: test credentialed JSON requests, 204 responses, and API error propagation with a mocked `fetch`.
-- `docs/IMPLEMENTATION_STATUS.md`, `docs/QUEST-TRACEABILITY.md`, `docs/NOVO-PRD-COVERAGE.md`, and `docs/SECURITY.md`: source coverage, requirements tracking, and security limitations.
+- PostgreSQL integration: two overlapping `/me` calls against a legacy-compatible session return usable CSRF values, and both values authorize later writes. Existing integration coverage retains logout replay, expiry, role change, inactive account, cross-tenant write, CSRF/origin, and multipart cases.
+- Web unit: two same-tenant users receive different protected query keys; protected cache removal is asserted; successful server logout, network/5xx unconfirmed logout, and already-invalid 401 logout are distinguished.
+- Web API client: a pre-401 JSON POST carries memory-only CSRF; the next bodyless logout POST remains credentialed but carries neither CSRF nor `Content-Type`.
 
-## Validation boundaries and open work
+## Validation record
 
-- The normal GitHub Actions `api-and-web` job runs dependency installation, Prisma Client generation, monorepo build, and Vitest via `pnpm test`; the `ml` job imports RAG dependencies and runs `pytest` with CPU-only PyTorch. The CI configuration **does not currently run `pnpm lint`**.
-- Local Codex checks of pnpm remain blocked by project-store symlink `EPERM`; Docker and PostgreSQL runtime validation were not demonstrated. Git operations also needed the repository owner's normal PowerShell because Codex could not create `.git/index.lock`.
-- The full embedding-backed Chroma smoke script is outside CI; provider-backed generation and broader RAG evaluation remain unverified.
-- API/Web unit tests do not replace integration or negative security tests. The browser still stores a bearer token in `sessionStorage`, logout cannot revoke the copied bearer server-side, and cookie-authenticated mutations need explicit CSRF/origin defenses. These are Sprint 02 work and prevent production/security sign-off.
-- SIMS sync, attachment/DB backup and restore, production deploy, tenant isolation and RBAC negative cases, performance, accessibility and browser E2E are not proved by this sprint.
+| Check | Status | Observed evidence |
+| --- | --- | --- |
+| Git checkpoint | PASS | PR #2 head at `91b0a23`, based on the existing Sprint 02 branch; no history rewrite or merge. |
+| `git diff --check` / package JSON validation | PASS | No whitespace errors; package JSON parses; all 86 requirement IDs remain unique (14 FR, 10 NFR, 20 Main Quest, 42 Side Quest). |
+| Hosted CI at `91b0a23` | PASS | GitHub CLI reports 4/4 successful jobs: API/Web push and pull_request, ML push and pull_request; runs `40196407790` and `40196411378`. |
+| `pnpm install --frozen-lockfile` | BLOCKED locally | Sandbox pnpm project-store symlink `EPERM`. |
+| `pnpm db:generate`, `pnpm build`, `pnpm test`, `pnpm lint` | BLOCKED locally | Same dependency/runtime blocker. |
+| PostgreSQL migration and integration suite | PASS (hosted CI) | Mandatory migration and `pnpm test` steps precede the successful API/Web job completion. Full test totals were not independently captured in this handoff. |
+| ML jobs | PASS (hosted CI) | Both push and PR ML checks passed on the current PR head; no ML source changes were introduced in this correction. |
 
-## Requirement status and merge decision
+## Review and owner commands
 
-The original 14 FR + 10 NFR + 20 Main Quest + 42 Side Quest remain in scope. The conservative audit baseline is **0 verified, 70 partial, 6 blocked, 10 not-started**. A passing CI baseline does not automatically promote whole product requirements to `verified`.
+Run these in ordinary Windows PowerShell from the repository after reviewing the diff:
 
-The four CI checks have passed. The repository owner should review the final docs-only correction, push it to **PR #1**, confirm the latest checks again, and only then merge to `main`. After merge, Sprint 02 can implement revocable server-side sessions, CSRF/origin protection, tenant isolation, RBAC negative tests, and accompanying migration/test coverage.
+```powershell
+Set-Location C:\Users\raden\dev\projects\NOVO-Business-Centre
+git diff --check
+git add -- docs/CODEX_HANDOFF.md docs/IMPLEMENTATION_STATUS.md docs/NOVO-PRD-COVERAGE.md docs/QUEST-TRACEABILITY.md docs/SECURITY.md
+git diff --cached --check
+git commit -m "docs: record Sprint 02 final CI evidence"
+git push origin codex/sprint-02-auth-security
+gh pr checks 2 --repo RadenAlta/NOVO-Business-Centre --watch
+```
+
+After the documentation-only commit passes its own GitHub checks, review PR #2 before explicitly marking it ready and merging. A successful security-focused CI suite does not prove every product requirement or production configuration.
+
+## Explicit non-claims
+
+All 86 requirement IDs remain tracked exactly once. Current hosted CI is 4/4 PASS, but this does not claim production readiness, 86/86 functional completion, a full browser E2E audit, capstone completion, or an automatic merge.

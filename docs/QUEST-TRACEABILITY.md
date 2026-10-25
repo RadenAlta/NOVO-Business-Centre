@@ -1,6 +1,6 @@
 # Asah Quest Traceability
 
-**Sprint 01 audit date:** 25 October 2026
+**Sprint 02 update date:** 25 October 2026
 **Rule:** a source file is not evidence of a completed quest. Each row below uses the project status vocabulary and is intentionally limited to this workspace audit.
 
 ## Main Quest (20)
@@ -32,17 +32,17 @@
 
 | ID | Area/track | Requirement | Status | Audit evidence / blocker |
 | --- | --- | --- | --- | --- |
-| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite web and Express API are distinct packages with network client source. |
-| SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package exists and GitHub CI monorepo build passed on `5210332`; deployed/browser behavior remains unverified. |
-| SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express API uses /api/v1 route surface in source. |
+| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite and Express remain decoupled; protected calls use credentialed cookie fetch with abort signals and tenant/user/role cache isolation. Runtime flow is pending. |
+| SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package exists and GitHub CI monorepo build passed on `91b0a23`; deployed/browser behavior remains unverified. |
+| SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express `/api/v1` has server-side session, CSRF and origin middleware; integration suite is awaiting execution. |
 | SQ-04 | Full-Stack | Antarmuka menggunakan CSS framework dan UI component modern | partial | Responsive CSS/UI source exists; visual browser review not run. |
 | SQ-05 | Full-Stack | Networking calls menggunakan Axios | not-started | Client uses native fetch rather than the checklist's Axios target. |
-| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | Blocked: Prisma/PostgreSQL persistence cannot be verified without a DB runtime. |
+| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | `UserSession` migrations include stable-CSRF compatibility and CI provides disposable PostgreSQL, but no fresh migration/runtime result has been observed. |
 | SQ-07 | Full-Stack | Layanan Gen AI diakses melalui Backend, bukan langsung dari Frontend. | partial | Server-side AI route code exists; provider integration not configured/executed. |
 | SQ-08 | Full-Stack | Hasil tim Data Science (dasbor, prediksi, atau rekomendasi) tampil pada fitur yang relevan. | partial | Demand-prediction integration source exists; no running ML/API proof. |
 | SQ-09 | Full-Stack | Riwayat hasil layanan Gen AI tersimpan di database. | partial | AiInteraction persistence model/path exists; migration/runtime unverified. |
-| SQ-10 | Full-Stack | Backend memvalidasi data menggunakan schema validation (seperti Joi). | partial | Zod request validation is present in backend source. |
-| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | Error envelope and UI messages observed statically; failure journey untested. |
+| SQ-10 | Full-Stack | Backend memvalidasi data menggunakan schema validation (seperti Joi). | partial | Zod validation plus session/CSRF/trusted-origin checks are in source; runtime evidence pending. |
+| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | API error envelopes and retryable failed-logout UI path are in source; runtime journey remains pending. |
 | SQ-12 | Full-Stack | Mockup dibuat sebelum pengembangan. | not-started | No pre-development mockup evidence is asserted. |
 | SQ-13 | Full-Stack | Antarmuka responsif dengan keputusan desain yang jelas, bukan sekadar mengikuti template umum. | partial | Responsive breakpoints/source patterns observed; no device test. |
 | SQ-14 | Full-Stack | Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis). | partial | Git history and PR #1 exist; all four owner-reported CI checks passed on `5210332`; team collaboration/review evidence remains incomplete. |
@@ -52,7 +52,7 @@
 | SQ-18 | Gen AI | Menerapkan teknik untuk meningkatkan kinerja model, seperti augmentasi data atau penyetelan hyperparameter, lalu menuliskan pengaruhnya terhadap hasil model di README. | not-started | No tuning experiment or comparison evidence was observed. |
 | SQ-19 | Gen AI | Menguji model menggunakan data uji yang disisihkan dengan metrik yang sesuai dengan jenis tugasnya, seperti F1-score untuk klasifikasi atau precision@k untuk rekomendasi, lalu menuliskan hasilnya di README. | partial | Held-out metric code exists; metrics not regenerated in this sprint. |
 | SQ-20 | Gen AI | Melatih model tambahan yang melengkapi solusi, misalnya model klasifikasi sentimen ulasan pelanggan dengan minimal 2 kelas, yaitu positif dan negatif. Hasilnya dapat ditampilkan di aplikasi web tim atau di dasbor tim Data Science. | partial | Demand regressor complements intent classifier in source. |
-| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db source and fallback tests exist; GitHub CI ML pytest passed on `5210332`, but embedding-backed retrieval and provider generation are unverified. |
+| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db source and fallback tests exist; GitHub CI ML pytest passed on `91b0a23`, but embedding-backed retrieval and provider generation are unverified. |
 | SQ-22 | Gen AI | Menjadikan model AI yang dilatih di Main Quest sebagai model klasifikasi intent dengan minimal 4 intent, seperti tanya produk, pemesanan, keluhan, dan lainnya. Hasil klasifikasi dipakai untuk mengarahkan pertanyaan ke alur yang sesuai, misalnya pertanyaan produk dijawab oleh sistem RAG dan keluhan diteruskan ke pemilik usaha. | partial | At least four intent routes are present in source; endpoint untested. |
 | SQ-23 | Gen AI | Menyusun prompt terstruktur (template, few-shot) agar hasil konsisten dengan gaya bahasa usaha. | partial | Structured prompt construction is present in server-side AI code. |
 | SQ-24 | Gen AI | Membatasi chatbot agar menolak pertanyaan di luar konteks usaha dengan sopan, lalu mengujinya menggunakan minimal 10 pertanyaan di luar konteks dan menuliskan hasilnya di README. | not-started | No ten-question out-of-scope/refusal test suite observed. |
@@ -85,3 +85,7 @@
 | not-started | 0 | 5 | 5 |
 
 No score, course-completion claim, or `62/62` claim is made. The next status change must cite a test result or a documented manual observation.
+
+## Sprint 02 security traceability note
+
+The 62 quest rows remain in scope and retain their conservative statuses. Sprint 02 correction adds source/test evidence most directly to SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11, including stable CSRF concurrency, cache isolation and unconfirmed-logout handling. The PostgreSQL migration and security integration scenarios passed in hosted CI at `91b0a23` (API/Web push and PR jobs successful). Rows remain conservatively partial/blocked where full user-facing workflows, persistence across redeploy, or production deployment are not demonstrated.
