@@ -14,11 +14,11 @@ Errors share this shape:
 | --- | --- | --- |
 | `POST /auth/bootstrap` | JSON body and `Origin` equal to `WEB_ORIGIN` (or matching Referer fallback). | Sets `novo_session` HttpOnly cookie; returns `{user, tenant, csrfToken}` and never a session token. Only works before the first tenant exists. |
 | `POST /auth/login` | JSON credentials and trusted Origin/Referer. | Sets a new opaque HttpOnly cookie; returns `{user, tenant, csrfToken}` and never a bearer token. |
-| `GET /me` | Cookie only; no CSRF header. | Returns `{user, tenant, csrfToken}` so a page reload can restore in-memory state. |
+| `GET /me` | Cookie only; no CSRF header. | Returns `{user, tenant, csrfToken}` with a stable session-bound CSRF value. Concurrent reads return usable equivalent values; legacy sessions are upgraded atomically. |
 | `POST /auth/logout` | Trusted Origin/Referer and `X-Novo-Csrf` when the session is active. | Revokes the active server-side session, clears the cookie, and returns `204`. A missing/previously revoked cookie also returns `204`. |
 | Every other `POST`, `PUT`, `PATCH`, `DELETE` | Cookie, `X-Novo-Csrf`, and trusted Origin/Referer. | Rejects missing/invalid CSRF as `403 CSRF_INVALID`; rejects an untrusted origin as `403 UNTRUSTED_ORIGIN`. |
 
-`GET`, `HEAD`, and `OPTIONS` do not require a CSRF header. The React client uses `credentials: "include"`, stores the CSRF token only in memory, and deliberately leaves multipart `FormData` content types to the browser.
+`GET`, `HEAD`, and `OPTIONS` do not require a CSRF header. The React client uses `credentials: "include"`, stores the CSRF token only in memory, deliberately leaves multipart `FormData` content types to the browser, scopes cached protected data to tenant/user/role, and removes that cache on account change or unauthentication. Logout only clears local state after server confirmation (`204`) or an already-invalidated `401`; other failures remain visible and retryable.
 
 | Area | Endpoint | Purpose |
 | --- | --- | --- |

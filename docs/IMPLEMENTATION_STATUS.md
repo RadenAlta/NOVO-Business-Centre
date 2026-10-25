@@ -20,7 +20,7 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 
 | ID | Area/track | Requirement | Status | Audit evidence / blocker |
 | --- | --- | --- | --- | --- |
-| FR-001 | Authentication | Login/logout dan session persisten | partial | Implemented pending runtime verification: opaque 256-bit HttpOnly cookie, hashed `UserSession`, expiry/revocation and `/me` reload in `apps/api/src/auth.ts` and `app.ts`; integration suite added but not run locally. |
+| FR-001 | Authentication | Login/logout dan session persisten | partial | Implemented pending runtime verification: opaque 256-bit HttpOnly cookie, stable session-bound CSRF issuance without `/me` rotation races, hash-only session persistence, expiry/revocation and replay integration coverage. |
 | FR-002 | RBAC | Validasi role/permission & business-unit scope di server | partial | Implemented pending runtime verification: session lookup reloads the active user/current role and enforces tenant match; negative role-change, inactive-account and cross-tenant tests are defined in `security.integration.test.ts`. |
 | FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Static audit: `apps/api/src/app.ts` master-data CRUD/active-state routes and `apps/web/src/pages.tsx` MasterDataPage exist; no API integration test. |
 | FR-004 | Master Data Excel | Download template + impor Excel | not-started | No Excel template/download/import endpoint, parser, or web flow was found in `apps/api/src` or `apps/web/src`. |
@@ -41,7 +41,7 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | --- | --- | --- | --- | --- |
 | NFR-001 | Persistence | Data production tetap setelah restart/redeploy | blocked | Blocked: no PostgreSQL/Docker runtime available to prove persistence after restart. |
 | NFR-002 | Availability | NOVO tetap bekerja dengan data hasil sinkronisasi saat SIMS tidak tersedia | not-started | No offline/SIMS-unavailable graceful-degradation test observed. |
-| NFR-003 | Security | Cegah privilege escalation melalui header/client | partial | Source now rejects bearer-only/altered/revoked/expired sessions, checks fresh role and active state, scopes tenant from server data, and requires session-bound CSRF plus trusted origin for mutations. PostgreSQL test execution remains pending. |
+| NFR-003 | Security | Cegah privilege escalation melalui header/client | partial | Source rejects bearer-only/altered/revoked/expired sessions, checks fresh role/account/tenant state, uses stable CSRF/origin enforcement, scopes/removes React Query cache per principal, and retains UI state on unconfirmed logout. PostgreSQL execution remains pending. |
 | NFR-004 | Auditability | Histori transaksi & perubahan penting terlacak | partial | Static audit: `apps/api/src/audit.ts`, AuditLog schema and mutation audit calls exist; no persistence/query audit test. |
 | NFR-005 | Usability | Tidak ada blank screen; error/empty/denied state | partial | Static validation/error envelopes and UI message paths observed; end-to-end usability test absent. |
 | NFR-006 | Performance | Kasir/list utama responsif | blocked | Blocked: no load/performance environment or measurement was available. |
@@ -79,17 +79,17 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 
 | ID | Area/track | Requirement | Status | Audit evidence / blocker |
 | --- | --- | --- | --- | --- |
-| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite client and Express API remain separate; browser networking now uses credentialed cookie fetch with memory-only CSRF state. Runtime flow is pending CI/local test evidence. |
+| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite client and Express API remain separate; credentialed cookie fetch includes cancellation signals, protected cache keys include tenant/user/role, and cache removal occurs on account change/unauthentication. Runtime flow is pending. |
 | SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package exists and GitHub CI monorepo build passed on `5210332`; deployed/browser behavior remains unverified. |
 | SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express `/api/v1` routes now include server-side session, origin, and CSRF middleware; execution is pending. |
 | SQ-04 | Full-Stack | Antarmuka menggunakan CSS framework dan UI component modern | partial | Responsive CSS/UI source exists; visual browser review not run. |
 | SQ-05 | Full-Stack | Networking calls menggunakan Axios | not-started | Client uses native fetch rather than the checklist's Axios target. |
-| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | `UserSession` Prisma migration and disposable-PostgreSQL CI path were added, but migration/integration execution is blocked locally until CI or a normal Docker/PostgreSQL runtime provides observed evidence. |
+| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | `UserSession` migrations cover revocable sessions and stable CSRF compatibility; disposable-PostgreSQL CI is configured, but migration/integration execution is blocked locally pending fresh CI evidence. |
 | SQ-07 | Full-Stack | Layanan Gen AI diakses melalui Backend, bukan langsung dari Frontend. | partial | Server-side AI route code exists; provider integration not configured/executed. |
 | SQ-08 | Full-Stack | Hasil tim Data Science (dasbor, prediksi, atau rekomendasi) tampil pada fitur yang relevan. | partial | Demand-prediction integration source exists; no running ML/API proof. |
 | SQ-09 | Full-Stack | Riwayat hasil layanan Gen AI tersimpan di database. | partial | AiInteraction persistence model/path exists; migration/runtime unverified. |
 | SQ-10 | Full-Stack | Backend memvalidasi data menggunakan schema validation (seperti Joi). | partial | Zod request validation remains present; session, CSRF, and trusted-origin validation were added in API middleware. Runtime evidence is pending. |
-| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | Error envelopes now include explicit unauthenticated, CSRF, and untrusted-origin cases; UI/API runtime journey remains untested locally. |
+| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | Error envelopes cover unauthenticated/CSRF/origin cases; failed server/network logout now retains state and shows retry guidance. UI/API runtime proof is pending. |
 | SQ-12 | Full-Stack | Mockup dibuat sebelum pengembangan. | not-started | No pre-development mockup evidence is asserted. |
 | SQ-13 | Full-Stack | Antarmuka responsif dengan keputusan desain yang jelas, bukan sekadar mengikuti template umum. | partial | Responsive breakpoints/source patterns observed; no device test. |
 | SQ-14 | Full-Stack | Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis). | partial | Git history, remote branch, and PR #1 are evidenced by owner GitHub CLI output; team collaboration/review process remains unverified. |
@@ -143,10 +143,10 @@ Earlier CI failures (`pnpm` version conflict, PyTorch/CUDA disk quota, ignored b
 
 ## Sprint 02 security implementation and evidence boundary
 
-- Implemented source: `UserSession` migration, SHA-256-only opaque session persistence, HttpOnly cookie delivery, server-side revocation, replay rejection, fresh database role/account checks, tenant comparison, and global CSRF/trusted-origin middleware for cookie mutations.
-- Browser source: `apps/web/src/api.ts` no longer sends an Authorization header or stores sessions in browser storage. It uses credentialed fetch, holds only the CSRF value in memory, restores with `GET /me`, and preserves multipart boundaries.
-- Test source: `apps/api/src/security.integration.test.ts` defines bootstrap/session hashing, reload, logout replay, bearer/tamper/expiry rejection, CSRF/origin checks, multipart upload, RBAC role change, inactive-account and tenant-isolation cases. `apps/web/src/api.test.ts` covers cookie/CSRF and FormData client behavior.
-- CI source: `api-and-web` now starts disposable PostgreSQL 16, executes `prisma migrate deploy`, then build, tests, and typecheck lint. These are CI configuration changes, not an observed Sprint 02 CI result yet.
+- Implemented source: `UserSession` migrations, SHA-256-only opaque session persistence, stable CSRF issuance for concurrent `/me` reads, HttpOnly cookie delivery, server-side revocation/replay rejection, fresh database role/account checks, tenant comparison, and CSRF/trusted-origin middleware.
+- Browser source: credentialed fetch holds only CSRF in memory, passes query cancellation signals, scopes protected React Query keys by tenant/user/role, evicts that cache on session transitions, and preserves multipart boundaries. Failed logout stays visible/retryable until server revocation is confirmed.
+- Test source: API integration covers bootstrap/session hashing, replay, bearer/tamper/expiry rejection, CSRF/origin, concurrent `/me`, multipart, RBAC and tenant isolation. Web tests cover cookie/CSRF/FormData, per-principal cache eviction and confirmed/unconfirmed logout behavior.
+- CI source: `api-and-web` now starts disposable PostgreSQL 16, executes `prisma migrate deploy`, then build, tests, and typecheck lint. The previous head `2645d05` failed API/Web TypeScript build; these corrections require a fresh observed CI result before any `verified` claim.
 
 ## Current blockers and reproduce outside this sandbox
 

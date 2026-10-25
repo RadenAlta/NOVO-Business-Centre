@@ -10,7 +10,7 @@ import path from "node:path";
 
 import { z } from "zod";
 import { audit } from "./audit.js";
-import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, requireRoles, requireTrustedOrigin, revokeSessionForLogout, rotateCsrfToken, setSessionCookie } from "./auth.js";
+import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, requireRoles, requireTrustedOrigin, issueCsrfToken, revokeSessionForLogout, setSessionCookie } from "./auth.js";
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
@@ -107,7 +107,7 @@ api.get("/me", asyncRoute(async (request, response) => {
   const auth = me(request);
   const user = await prisma.user.findFirst({ where: { id: auth.id, tenantId: auth.tenantId, active: true }, select: { id: true, email: true, name: true, role: true, tenant: { select: { id: true, name: true, slug: true } } } });
   if (!user) throw new HttpError(401, "UNAUTHENTICATED", "Your account is no longer available.");
-  const csrfToken = await rotateCsrfToken((request as AuthenticatedRequest).session.id);
+  const csrfToken = await issueCsrfToken((request as AuthenticatedRequest).session.id);
   response.json({ user: { ...user, tenantId: auth.tenantId }, tenant: user.tenant, csrfToken });
 }));
 

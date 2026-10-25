@@ -132,6 +132,7 @@ model UserSession {
   tenantId      String
   tokenHash     String   @unique
   csrfTokenHash String
+  csrfToken     String?
   createdAt     DateTime @default(now())
   expiresAt     DateTime
   revokedAt     DateTime?

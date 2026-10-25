@@ -44,7 +44,7 @@ async function createAccount(slug: string, role: "ADMIN" | "VIEWER" = "ADMIN"): 
   return { tenantId: tenant.id, slug, userId: user.id, email, password };
 }
 
-async function login(agent: request.SuperAgentTest, account: TestAccount): Promise<request.Response> {
+async function login(agent: ReturnType<typeof request.agent>, account: TestAccount): Promise<request.Response> {
   return agent.post("/api/v1/auth/login").set("Origin", origin).send({ tenantSlug: account.slug, email: account.email, password: account.password }).expect(200);
 }
 
@@ -99,6 +99,20 @@ describe("revocable browser sessions", () => {
     await agent.post("/api/v1/auth/logout").set("Origin", origin).expect(204);
   });
 
+  it("keeps concurrent /me CSRF responses usable for subsequent writes", async () => {
+    const account = await createAccount("csrf-concurrency");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const rawToken = cookieFrom(signedIn).replace("novo_session=", "");
+
+    // Simulate a session issued before the stable-CSRF migration, then overlap two session restores.
+    await prisma.userSession.update({ where: { tokenHash: hashSecret(rawToken) }, data: { csrfToken: null } });
+    const [first, second] = await Promise.all([agent.get("/api/v1/me").expect(200), agent.get("/api/v1/me").expect(200)]);
+    expect(first.body.csrfToken).toEqual(second.body.csrfToken);
+
+    await agent.post("/api/v1/master-data").set("Origin", origin).set("X-Novo-Csrf", first.body.csrfToken).send({ type: "EMPLOYEE", identifier: "CSRF-RACE-1", fullName: "Concurrent Session One" }).expect(201);
+    await agent.post("/api/v1/master-data").set("Origin", origin).set("X-Novo-Csrf", second.body.csrfToken).send({ type: "EMPLOYEE", identifier: "CSRF-RACE-2", fullName: "Concurrent Session Two" }).expect(201);
+  });
   it("rejects bearer-only, altered, and expired browser session credentials", async () => {
     const account = await createAccount("tamper-tenant");
     const agent = request.agent(app);

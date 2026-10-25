@@ -65,20 +65,34 @@ export async function createBrowserSession(user: AuthContext): Promise<BrowserSe
       tenantId: user.tenantId,
       tokenHash: hashSecret(token),
       csrfTokenHash: hashSecret(csrfToken),
+      csrfToken,
       expiresAt,
     },
   });
   return { token, csrfToken, expiresAt };
 }
 
-export async function rotateCsrfToken(sessionId: string): Promise<string> {
-  const csrfToken = randomSecret();
-  const updated = await prisma.userSession.updateMany({
+export async function issueCsrfToken(sessionId: string): Promise<string> {
+  const existing = await prisma.userSession.findFirst({
     where: { id: sessionId, revokedAt: null, expiresAt: { gt: new Date() } },
-    data: { csrfTokenHash: hashSecret(csrfToken) },
+    select: { csrfToken: true },
   });
-  if (!updated.count) throw new HttpError(401, "UNAUTHENTICATED", "Your session is invalid or expired.");
-  return csrfToken;
+  if (!existing) throw new HttpError(401, "UNAUTHENTICATED", "Your session is invalid or expired.");
+  if (existing.csrfToken) return existing.csrfToken;
+
+  const csrfToken = randomSecret();
+  const claimed = await prisma.userSession.updateMany({
+    where: { id: sessionId, csrfToken: null, revokedAt: null, expiresAt: { gt: new Date() } },
+    data: { csrfToken, csrfTokenHash: hashSecret(csrfToken) },
+  });
+  if (claimed.count) return csrfToken;
+
+  const concurrent = await prisma.userSession.findFirst({
+    where: { id: sessionId, revokedAt: null, expiresAt: { gt: new Date() } },
+    select: { csrfToken: true },
+  });
+  if (concurrent?.csrfToken) return concurrent.csrfToken;
+  throw new HttpError(401, "UNAUTHENTICATED", "Your session is invalid or expired.");
 }
 export function setSessionCookie(response: Response, token: string): void {
   response.cookie(SESSION_COOKIE_NAME, token, { ...cookieOptions, maxAge: env.SESSION_TTL_SECONDS * 1000 });
