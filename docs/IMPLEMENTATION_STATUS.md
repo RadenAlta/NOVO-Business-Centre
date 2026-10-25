@@ -6,7 +6,7 @@
 
 ## Status convention
 
-Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`. `verified` requires an observed working behavior and a documented passing test. No requirement is marked `verified` in this sprint because the runtime checks below could not complete in this environment.
+Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`. `verified` requires an observed working behavior and a documented passing test. No end-to-end product requirement is marked `verified` in this sprint: the owner-reported CI passed, but it does not establish complete runtime behavior for each requirement.
 
 | Status | Count | Meaning in this audit |
 | --- | ---: | --- |
@@ -45,7 +45,7 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | NFR-004 | Auditability | Histori transaksi & perubahan penting terlacak | partial | Static audit: `apps/api/src/audit.ts`, AuditLog schema and mutation audit calls exist; no persistence/query audit test. |
 | NFR-005 | Usability | Tidak ada blank screen; error/empty/denied state | partial | Static validation/error envelopes and UI message paths observed; end-to-end usability test absent. |
 | NFR-006 | Performance | Kasir/list utama responsif | blocked | Blocked: no load/performance environment or measurement was available. |
-| NFR-007 | Maintainability | Domain modular, kontrak jelas | partial | Static layers are separated; build/typecheck is blocked by sandbox package-store limitation. |
+| NFR-007 | Maintainability | Domain modular, kontrak jelas | partial | Static layers are separated; GitHub CI monorepo build passed on `5210332`, while local sandbox installation and broader maintainability verification remain blocked. |
 | NFR-008 | Deployability | Deploy VPS sekolah dengan lingkungan terpisah | blocked | Blocked: no deployed environment, monitoring or recovery exercise was available. |
 | NFR-009 | Backup | DB dan lampiran memiliki prosedur backup/restore | not-started | No database-and-attachment backup/restore procedure, script, or drill was observed. |
 | NFR-010 | Browser | Akses desktop/laptop dan navigasi mobile tak rusak | partial | Static audit: responsive navigation/layout source exists in `apps/web/src/App.tsx` and `styles.css`; no browser/device test. |
@@ -80,7 +80,7 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | ID | Area/track | Requirement | Status | Audit evidence / blocker |
 | --- | --- | --- | --- | --- |
 | SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite web and Express API are distinct packages with network client source. |
-| SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package is present; production build did not run. |
+| SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package exists and GitHub CI monorepo build passed on `5210332`; deployed/browser behavior remains unverified. |
 | SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express API uses /api/v1 route surface in source. |
 | SQ-04 | Full-Stack | Antarmuka menggunakan CSS framework dan UI component modern | partial | Responsive CSS/UI source exists; visual browser review not run. |
 | SQ-05 | Full-Stack | Networking calls menggunakan Axios | not-started | Client uses native fetch rather than the checklist's Axios target. |
@@ -92,14 +92,14 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | Error envelope and UI messages observed statically; failure journey untested. |
 | SQ-12 | Full-Stack | Mockup dibuat sebelum pengembangan. | not-started | No pre-development mockup evidence is asserted. |
 | SQ-13 | Full-Stack | Antarmuka responsif dengan keputusan desain yang jelas, bukan sekadar mengikuti template umum. | partial | Responsive breakpoints/source patterns observed; no device test. |
-| SQ-14 | Full-Stack | Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis). | partial | Git history and branch exist; remote PR/push from this runtime remains unverified. |
+| SQ-14 | Full-Stack | Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis). | partial | Git history, remote branch, and PR #1 are evidenced by owner GitHub CLI output; team collaboration/review process remains unverified. |
 | SQ-15 | Full-Stack | Kontrak API atau format data disepakati dengan tim Gen AI dan Data Science sebelum pengembangan. | partial | Written API contract exists; no independent agreement record. |
 | SQ-16 | Full-Stack | Aplikasi di-deploy ke layanan gratis atau free tier (seperti Netlify, Render, Neon, atau Cloudflare Pages). | blocked | Blocked: no free-tier deployment is available to verify. |
 | SQ-17 | Gen AI | Memeriksa keseimbangan jumlah data antarkelas pada dataset dari tim Data Science dan menanganinya JIKA tidak seimbang, lalu menjelaskan penanganannya di README. | partial | Synthetic intent corpus/class-balance logic exists; training not executed. |
 | SQ-18 | Gen AI | Menerapkan teknik untuk meningkatkan kinerja model, seperti augmentasi data atau penyetelan hyperparameter, lalu menuliskan pengaruhnya terhadap hasil model di README. | not-started | No tuning experiment or comparison evidence was observed. |
 | SQ-19 | Gen AI | Menguji model menggunakan data uji yang disisihkan dengan metrik yang sesuai dengan jenis tugasnya, seperti F1-score untuk klasifikasi atau precision@k untuk rekomendasi, lalu menuliskan hasilnya di README. | partial | Held-out metric code exists; metrics not regenerated in this sprint. |
 | SQ-20 | Gen AI | Melatih model tambahan yang melengkapi solusi, misalnya model klasifikasi sentimen ulasan pelanggan dengan minimal 2 kelas, yaitu positif dan negatif. Hasilnya dapat ditampilkan di aplikasi web tim atau di dasbor tim Data Science. | partial | Demand regressor complements intent classifier in source. |
-| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db source and lightweight fallback tests exist; pytest and the full embedding smoke path remain unverified. |
+| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db source and fallback tests exist; GitHub CI ML pytest passed on `5210332`, but full embedding-backed Chroma retrieval and provider generation remain unverified. |
 | SQ-22 | Gen AI | Menjadikan model AI yang dilatih di Main Quest sebagai model klasifikasi intent dengan minimal 4 intent, seperti tanya produk, pemesanan, keluhan, dan lainnya. Hasil klasifikasi dipakai untuk mengarahkan pertanyaan ke alur yang sesuai, misalnya pertanyaan produk dijawab oleh sistem RAG dan keluhan diteruskan ke pemilik usaha. | partial | At least four intent routes are present in source; endpoint untested. |
 | SQ-23 | Gen AI | Menyusun prompt terstruktur (template, few-shot) agar hasil konsisten dengan gaya bahasa usaha. | partial | Structured prompt construction is present in server-side AI code. |
 | SQ-24 | Gen AI | Membatasi chatbot agar menolak pertanyaan di luar konteks usaha dengan sopan, lalu mengujinya menggunakan minimal 10 pertanyaan di luar konteks dan menuliskan hasilnya di README. | not-started | No ten-question out-of-scope/refusal test suite observed. |
@@ -122,23 +122,24 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | SQ-41 | Data Science | Membandingkan hasil model dan menjelaskan keterbatasannya jika menguji lebih dari satu model. | partial | Two-model comparison and caveat code exists; execution is unverified. |
 | SQ-42 | Data Science | Mengintegrasikan hasil prediksi ke aplikasi web bersama tim Full-stack. | partial | Prediction web card/proxy source exists; integration untested. |
 
-## Commands actually attempted
+## Verification evidence — GitHub CI versus local sandbox
 
-| Command | Observed result | Status |
+On 25 October 2026 the repository owner provided GitHub CLI output for commit `52103320ef5904ef56ac6cf3185270a22c57534f`: **4/4 CI checks passed**. These CI results are separate from the local Codex sandbox restrictions.
+
+| Evidence | Observation | Conclusion |
 | --- | --- | --- |
-| `pnpm install --frozen-lockfile` | pnpm project-store symlink creation failed with `EPERM` / exit `-4048` in this desktop sandbox. | blocked by environment |
-| `pnpm db:generate` | Stopped by the same pnpm symlink preflight. | blocked by environment |
-| `pnpm build` | Stopped by the same pnpm symlink preflight. | blocked by environment |
-| `pnpm test` | Stopped by the same pnpm symlink preflight. | blocked by environment |
-| `pnpm lint` | Stopped by the same pnpm symlink preflight. | blocked by environment || Latest GitHub Actions `api-and-web` (push + PR) | FAIL: `ERR_PNPM_IGNORED_BUILDS` for exactly `@prisma/client`, `@prisma/engines`, `prisma`, and `esbuild`; this policy change awaits a new run. | CI evidence |
-| Latest GitHub Actions `ml` (push + PR) | PASS according to the reviewed latest logs after the CPU-only PyTorch correction. | CI evidence || GitHub PR run `40155523749` (`api-and-web`) | FAIL at `pnpm test`: `@novo/contracts` had no test file. The supplied log establishes install, Prisma generation and build completed before this test-stage failure. | CI evidence |
-| Node `--check` for new Contracts/Web tests | PASS (exit 0) for TypeScript syntax only; Vitest execution remains unverified locally. | syntax only |
-| Bundled Python: `-m compileall services/ml/app services/ml/tests` | PASS (exit 0); all ML modules and both test files compiled on 25 October 2026. | syntax only |
-| Bundled Python: `-m pytest -q` in `services/ml` | BLOCKED (exit 1): bundled runtime has no `pytest`; ML dependencies were not installed locally. | blocked by environment |
-| `docker compose config` | Docker command was not installed/available. | blocked by environment |
-| Prisma schema validation / dev migration | Cannot run without installed dependencies and a PostgreSQL/Docker runtime. | blocked by environment |
-| Git staging/commit in Codex | git add could not create .git/index.lock (Permission denied). | blocked by environment |
-| gh pr checks 1 / gh run list | Current Codex environment could not connect to pi.github.com (exit 1); no new remote status retrieved. | blocked by environment |
+| GitHub Actions `push`, run `40156431701` | `api-and-web` PASS; `ml` PASS. | 2/2 jobs passed |
+| GitHub Actions `pull_request`, run `40156434593` | `api-and-web` PASS; `ml` PASS. | 2/2 jobs passed |
+| API/Web CI workflow | `pnpm install --frozen-lockfile`, `pnpm db:generate`, `pnpm build`, and `pnpm test` are the configured stages. | Successful workflow, including the new Contracts/Web test baseline |
+| ML CI workflow | CPU-only PyTorch verification, RAG dependency imports and `python -m pytest -q` are configured. | Successful ML CI tests; not a full embedding/provider smoke test |
+| `pnpm lint` | Not included in this CI workflow. | Not verified by GitHub CI |
+| Local Codex pnpm commands | Install, generate, build, test and lint blocked by pnpm store symlink `EPERM`. | Local sandbox limitation, not a CI failure |
+| Local Python syntax | ML `compileall` was reported PASS by Codex. | Syntax validation only |
+| Local Python pytest | Unavailable in the bundled Python runtime. | Local sandbox limitation; CI pytest passed separately |
+| `docker compose config`, PostgreSQL migrations, browser E2E | Not executed with working Docker/DB/browser environments. | Unverified |
+| Local Codex Git staging | `.git/index.lock` permission denied. | Owner successfully committed/pushed from Windows PowerShell |
+
+Earlier CI failures (`pnpm` version conflict, PyTorch/CUDA disk quota, ignored build scripts, and missing Contracts Vitest files) were superseded by the passing workflows for `5210332`. New CI results after any subsequent documentation-only commit must still be checked.
 
 ## Static security audit
 

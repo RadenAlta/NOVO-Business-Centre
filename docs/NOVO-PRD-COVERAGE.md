@@ -33,10 +33,8 @@ The audit preserves the original NOVO modules—Store, Shuttle, Catering, Fundin
 
 Use a normal local/CI runtime to run install, database generation/migration, API/web build/lint/test, Python compilation/pytest and at least one tenant/RBAC negative test. Only then promote individual rows from `partial` or `blocked` to `verified` with the exact evidence.
 
-## CI evidence and test-baseline correction
+## CI evidence and test baseline (25 October 2026)
 
-The supplied current PR log is GitHub Actions run `40155523749` (`pull_request`, SHA `ca876c3…`). It shows that `pnpm install --frozen-lockfile`, Prisma generation and the monorepo build completed far enough for the workflow to run `pnpm test`. The test stage then failed because `@novo/contracts` ran `vitest run` with no test files. This supersedes the previous ignored-build issue as the current API/Web blocker.
+The repository owner supplied the passing GitHub CLI checks for commit `5210332`: `push` run `40156431701` and `pull_request` run `40156434593`, with `api-and-web` and `ml` passing on both triggers (**4/4 PASS**). The earlier pnpm/policy and Vitest-discovery blockers are resolved in those checks.
 
-Contracts now has deterministic runtime tests for the API prefix, the exact unique operator-role list, and the absence of a `STUDENT` operator role. Web now has deterministic mocked-fetch tests for credentialed JSON requests, HTTP 204 handling and API-error propagation. Existing API helper tests remain in place. No test script was removed and neither Vitest nor its no-test failure behavior was disabled.
-
-Both ML checks passed on SHA `ca876c3` according to the reviewed logs and were not changed. The supplied push failure did not include a current error log, so no claim is made about its cause. The new Contracts/Web tests have passed source syntax checks only in this sandbox; their Vitest execution and the next CI run remain required before any feature requirement is marked verified.
+Unit tests cover Contracts API/role invariants, Web API fetch responses/errors, existing API helpers, and ML retrieval fallback; this is useful baseline coverage, not complete feature verification. The CI configuration does not execute `pnpm lint`, browser E2E, PostgreSQL/Prisma migrations, production backup/restore, tenant/RBAC negative integration cases, or the separate full Chroma embedding smoke test. Those remain future acceptance gates.
