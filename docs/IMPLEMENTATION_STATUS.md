@@ -22,17 +22,17 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | --- | --- | --- | --- | --- |
 | FR-001 | Authentication | Login/logout dan session persisten | partial | Static audit: JWT login, cookie and sessionStorage bearer exist; no executed auth flow test. |
 | FR-002 | RBAC | Validasi role/permission & business-unit scope di server | partial | Static audit: authenticate reloads active user and tenant; requireRoles is present; negative tests absent. |
-| FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Static audit: Store, Shuttle, Catering, Funding and Financing routes/screens exist; no API integration run. |
-| FR-004 | Master Data Excel | Download template + impor Excel | not-started | No executed POS workflow test or observable checkout proof in this sprint. |
-| FR-005 | Membership | Cooperative membership & eligibility | partial | Static audit: Prisma StoreProduct/StoreStock and transactional sale paths; migration not applied. |
-| FR-006 | SO Store | POS, inventory, payment, receipt, history, stock movement | partial | Static audit: shuttle subscription, invoice, payment and settlement surfaces; no settlement flow test. |
-| FR-007 | SO Shuttle | Subscription, billing, payment, settlement, reporting | partial | Static audit: catering order surface exists; operational lifecycle test absent. |
-| FR-008 | Attachments | Upload/download persisten terotorisasi | partial | Static audit: savings accounts use append-only ledger records; DB transaction behavior untested. |
-| FR-009 | SO Catering | Vendor, paket, peserta, fee, invoice, payment, rekonsiliasi | partial | Static audit: financing application/receivable and purchasing-extension code exists; no integration test. |
-| FR-010 | SO Funding | Kategori/akun/tabungan, ledger, saldo, restricted fund | partial | Static audit: tenant-scoped master-data, membership, roles, attachments and audit models/routes exist. |
-| FR-011 | SO Financing | PR, approval, procurement, HPP, BAST, receivable, payment | partial | Static audit: reporting/dashboard routes and CSV dashboard exist; no runnable build or data test. |
+| FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Static audit: `apps/api/src/app.ts` master-data CRUD/active-state routes and `apps/web/src/pages.tsx` MasterDataPage exist; no API integration test. |
+| FR-004 | Master Data Excel | Download template + impor Excel | not-started | No Excel template/download/import endpoint, parser, or web flow was found in `apps/api/src` or `apps/web/src`. |
+| FR-005 | Membership | Cooperative membership & eligibility | partial | Static audit: `app.ts` `/members` routes enforce teacher/employee eligibility and use `CooperativeMember`; no API integration test. |
+| FR-006 | SO Store | POS, inventory, payment, receipt, history, stock movement | partial | Static audit: `app.ts` product, stock-adjustment and transactional `/sales` routes plus Store screen exist; no POS integration test. |
+| FR-007 | SO Shuttle | Subscription, billing, payment, settlement, reporting | partial | Static audit: `app.ts` shuttle route, subscription, invoice and payment routes exist; no billing/settlement integration test. |
+| FR-008 | Attachments | Upload/download persisten terotorisasi | partial | Static audit: `app.ts` attachment upload/signature/hash and tenant-scoped download paths exist; no storage integration test. |
+| FR-009 | SO Catering | Vendor, paket, peserta, fee, invoice, payment, rekonsiliasi | partial | Static audit: `app.ts` catering order creation/status paths and CateringPage exist; vendor/package/reconciliation flows remain incomplete. |
+| FR-010 | SO Funding | Kategori/akun/tabungan, ledger, saldo, restricted fund | partial | Static audit: `app.ts` savings-account and append-only ledger-entry routes exist; category/restricted-fund/reconciliation flows remain incomplete. |
+| FR-011 | SO Financing | PR, approval, procurement, HPP, BAST, receivable, payment | partial | Static audit: `app.ts` financing application/receivable routes and FinancingPage exist; procurement/HPP/BAST lifecycle remains incomplete. |
 | FR-012 | SIMS API | Sinkronisasi master data melalui API | not-started | No SIMS sync adapter or sync-failure test was observed in this audit. |
-| FR-013 | Reporting Core | Laporan lintas unit dari data persisten | partial | Static audit: Docker Compose, env examples and CI workflow exist; local validation is blocked. |
+| FR-013 | Reporting Core | Laporan lintas unit dari data persisten | partial | Static audit: `app.ts` dashboard aggregation and the reporting/dashboard surfaces exist; no persistent-data reporting test. |
 | FR-014 | Backup/Restore | Backup/restore data & attachment | not-started | No executed backup/restore drill or evidence was found. |
 
 ## Non-functional requirements (10)
@@ -42,13 +42,13 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | NFR-001 | Persistence | Data production tetap setelah restart/redeploy | blocked | Blocked: no PostgreSQL/Docker runtime available to prove persistence after restart. |
 | NFR-002 | Availability | NOVO tetap bekerja dengan data hasil sinkronisasi saat SIMS tidak tersedia | not-started | No offline/SIMS-unavailable graceful-degradation test observed. |
 | NFR-003 | Security | Cegah privilege escalation melalui header/client | partial | Static tenant and active-user checks observed; isolation/RBAC negative tests not run. |
-| NFR-004 | Auditability | Histori transaksi & perubahan penting terlacak | partial | Security review identified revocation, XSS-token and CSRF gaps; no production hardening proof. |
+| NFR-004 | Auditability | Histori transaksi & perubahan penting terlacak | partial | Static audit: `apps/api/src/audit.ts`, AuditLog schema and mutation audit calls exist; no persistence/query audit test. |
 | NFR-005 | Usability | Tidak ada blank screen; error/empty/denied state | partial | Static validation/error envelopes and UI message paths observed; end-to-end usability test absent. |
 | NFR-006 | Performance | Kasir/list utama responsif | blocked | Blocked: no load/performance environment or measurement was available. |
 | NFR-007 | Maintainability | Domain modular, kontrak jelas | partial | Static layers are separated; build/typecheck is blocked by sandbox package-store limitation. |
 | NFR-008 | Deployability | Deploy VPS sekolah dengan lingkungan terpisah | blocked | Blocked: no deployed environment, monitoring or recovery exercise was available. |
-| NFR-009 | Backup | DB dan lampiran memiliki prosedur backup/restore | not-started | No accessibility review or automated accessibility test observed. |
-| NFR-010 | Browser | Akses desktop/laptop dan navigasi mobile tak rusak | partial | Static audit-log and ledger structures observed; no retention/backup operations proof. |
+| NFR-009 | Backup | DB dan lampiran memiliki prosedur backup/restore | not-started | No database-and-attachment backup/restore procedure, script, or drill was observed. |
+| NFR-010 | Browser | Akses desktop/laptop dan navigasi mobile tak rusak | partial | Static audit: responsive navigation/layout source exists in `apps/web/src/App.tsx` and `styles.css`; no browser/device test. |
 
 ## Main Quest (20)
 
@@ -66,7 +66,7 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | GE-04 | Gen AI | Diperbolehkan menggunakan API data publik, sumber data, dataset, library, maupun data pribadi apa pun, dengan mencantumkan sumber setiap item yang digunakan di README. | partial | Synthetic corpus/source documentation exists; source/runtime evaluation not run. |
 | GE-05 | Gen AI | Membangun fitur tambahan generatif AI yang memanfaatkan API model proprietary seperti ChatGPT, Gemini, dll. | partial | Optional provider-based assistant code exists; provider/key path not configured. |
 | GE-06 | Gen AI | Membandingkan minimal 2 model atau konfigurasi dengan metrik yang sama, lalu menuliskan tabel perbandingan dan alasan pemilihan model terbaik di README. | partial | Logistic Regression versus LinearSVC evaluation code exists; results not regenerated. |
-| GE-07 | Gen AI | Bekerja sama dengan anggota tim dari Full-stack dalam mengembangkan REST API menggunakan FastAPI atau Flask untuk melakukan serving model AI yang dapat diakses secara online oleh back-end aplikasi. | partial | FastAPI endpoints exist; Python runtime is unavailable to serve or test them. |
+| GE-07 | Gen AI | Bekerja sama dengan anggota tim dari Full-stack dalam mengembangkan REST API menggunakan FastAPI atau Flask untuk melakukan serving model AI yang dapat diakses secara online oleh back-end aplikasi. | partial | FastAPI endpoints exist in `services/ml/app/main.py`; `compileall` passed on 25 October 2026, but service runtime is unverified because dependencies are not installed locally. |
 | DA-01 | Data Science | Mengidentifikasi dan menganalisis bersama tim masalah UMKM yang akan diselesaikan dan menjelaskan peran data dalam solusi tersebut. | partial | Data-problem documentation and dashboard code exist; no dashboard runtime. |
 | DA-02 | Data Science | Merumuskan pertanyaan bisnis yang dapat dijawab melalui analisis data. | partial | Static KPIs/questions observed in dashboard/source documentation. |
 | DA-03 | Data Science | Melakukan seluruh tahapan pengolahan data (data wrangling). | partial | CSV validation and transformations are present in source; unexecuted. |
@@ -99,14 +99,14 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | SQ-18 | Gen AI | Menerapkan teknik untuk meningkatkan kinerja model, seperti augmentasi data atau penyetelan hyperparameter, lalu menuliskan pengaruhnya terhadap hasil model di README. | not-started | No tuning experiment or comparison evidence was observed. |
 | SQ-19 | Gen AI | Menguji model menggunakan data uji yang disisihkan dengan metrik yang sesuai dengan jenis tugasnya, seperti F1-score untuk klasifikasi atau precision@k untuk rekomendasi, lalu menuliskan hasilnya di README. | partial | Held-out metric code exists; metrics not regenerated in this sprint. |
 | SQ-20 | Gen AI | Melatih model tambahan yang melengkapi solusi, misalnya model klasifikasi sentimen ulasan pelanggan dengan minimal 2 kelas, yaitu positif dan negatif. Hasilnya dapat ditampilkan di aplikasi web tim atau di dasbor tim Data Science. | partial | Demand regressor complements intent classifier in source. |
-| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db design exists; embedding/provider runtime was not configured. |
+| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db source and lightweight fallback tests exist; pytest and the full embedding smoke path remain unverified. |
 | SQ-22 | Gen AI | Menjadikan model AI yang dilatih di Main Quest sebagai model klasifikasi intent dengan minimal 4 intent, seperti tanya produk, pemesanan, keluhan, dan lainnya. Hasil klasifikasi dipakai untuk mengarahkan pertanyaan ke alur yang sesuai, misalnya pertanyaan produk dijawab oleh sistem RAG dan keluhan diteruskan ke pemilik usaha. | partial | At least four intent routes are present in source; endpoint untested. |
 | SQ-23 | Gen AI | Menyusun prompt terstruktur (template, few-shot) agar hasil konsisten dengan gaya bahasa usaha. | partial | Structured prompt construction is present in server-side AI code. |
 | SQ-24 | Gen AI | Membatasi chatbot agar menolak pertanyaan di luar konteks usaha dengan sopan, lalu mengujinya menggunakan minimal 10 pertanyaan di luar konteks dan menuliskan hasilnya di README. | not-started | No ten-question out-of-scope/refusal test suite observed. |
 | SQ-25 | Gen AI | Menyepakati kontrak API bersama tim Full-stack, meliputi endpoint, format request/response, dan kode error, sebelum pengembangan dimulai. | partial | Written API contract exists; no independent agreement record. |
 | SQ-26 | Gen AI | Menangani input yang tidak valid dan kegagalan layanan AI, termasuk saat API model generatif lambat atau mencapai batas kuota gratis, dengan pesan yang jelas bagi pengguna. | partial | Validation/provider-error handling is present statically; not executed. |
 | SQ-27 | Gen AI | Mengintegrasikan solusi ke kanal yang dipakai UMKM, seperti Telegram atau WhatsApp. Untuk WhatsApp, tim dapat menggunakan nomor uji gratis dari WhatsApp Cloud API. | not-started | No WhatsApp or Telegram channel integration observed. |
-| SQ-28 | Gen AI | Menyediakan dokumentasi API yang dapat dicoba langsung, seperti Swagger atau OpenAPI. | partial | FastAPI docs route exists in source; service cannot start in current Python runtime. |
+| SQ-28 | Gen AI | Menyediakan dokumentasi API yang dapat dicoba langsung, seperti Swagger atau OpenAPI. | partial | FastAPI `/docs` route exists and ML source compiles; service startup remains unverified because dependencies are unavailable locally. |
 | SQ-29 | Data Science | Mengembangkan dasbor interaktif menggunakan Streamlit atau teknologi visualisasi lain yang sesuai. | partial | Streamlit dashboard source exists; not executed. |
 | SQ-30 | Data Science | Menampilkan indikator bisnis dan menyediakan filter yang relevan untuk membantu pengguna memahami kondisi bisnis. | partial | Dashboard KPI/filter source exists; not executed. |
 | SQ-31 | Data Science | Menyediakan pembaruan data melalui unggahan file atau koneksi ke sumber data. | partial | CSV refresh/upload source exists; not executed. |
@@ -131,11 +131,12 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | `pnpm build` | Stopped by the same pnpm symlink preflight. | blocked by environment |
 | `pnpm test` | Stopped by the same pnpm symlink preflight. | blocked by environment |
 | `pnpm lint` | Stopped by the same pnpm symlink preflight. | blocked by environment |
-| `python -m compileall services/ml/app` | Windows app-alias Python executable was inaccessible; no Python interpreter was available. | blocked by environment |
-| `python -m pytest services/ml/tests` | Same inaccessible Windows app-alias Python executable. | blocked by environment |
+| Bundled Python: `-m compileall services/ml/app services/ml/tests` | PASS (exit 0); all ML modules and both test files compiled on 25 October 2026. | syntax only |
+| Bundled Python: `-m pytest -q` in `services/ml` | BLOCKED (exit 1): bundled runtime has no `pytest`; ML dependencies were not installed locally. | blocked by environment |
 | `docker compose config` | Docker command was not installed/available. | blocked by environment |
 | Prisma schema validation / dev migration | Cannot run without installed dependencies and a PostgreSQL/Docker runtime. | blocked by environment |
 | Git staging/commit in Codex | git add could not create .git/index.lock (Permission denied). | blocked by environment |
+| gh pr checks 1 / gh run list | Current Codex environment could not connect to pi.github.com (exit 1); no new remote status retrieved. | blocked by environment |
 
 ## Static security audit
 

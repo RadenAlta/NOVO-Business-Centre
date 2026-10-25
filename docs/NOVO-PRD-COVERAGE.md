@@ -25,10 +25,18 @@ The audit preserves the original NOVO modules—Store, Shuttle, Catering, Fundin
 ## Verification limits and known gaps
 
 - Dependencies could not install because this sandbox blocks pnpm project-store symlink creation (`EPERM`, exit `-4048`).
-- Python resolves only to an inaccessible Windows app alias, and Docker is unavailable. ML tests, FastAPI startup, PostgreSQL migrations and Compose validation could not run.
+- Bundled Python compiled all ML source and test modules successfully, but has no installed `pytest` or ML dependencies; pytest, FastAPI startup, PostgreSQL migrations and Compose validation could not run.
 - No browser end-to-end flow, deployment, production backup/restore, SIMS unavailability test, accessibility test, performance measurement or external-channel test was observed.
 - The source contains a bearer/sessionStorage compatibility path, no server-side revocation and no demonstrated CSRF defense. See `docs/SECURITY.md`.
 
 ## What a later sprint must prove
 
 Use a normal local/CI runtime to run install, database generation/migration, API/web build/lint/test, Python compilation/pytest and at least one tenant/RBAC negative test. Only then promote individual rows from `partial` or `blocked` to `verified` with the exact evidence.
+## CI root cause and correction — awaiting a new GitHub Actions run
+
+The failed GitHub Actions logs from 25 October 2026 establish two environment/configuration causes, not application-test results:
+
+- `api-and-web`: `pnpm/action-setup@v4` specified version `11` while the root `packageManager` declared `pnpm@11.25.0`.
+- `ml`: normal PyPI resolution through `sentence-transformers` installed CUDA/NVIDIA/Triton packages until the runner returned `Disk quota exceeded`; pytest never began.
+
+The workflow now takes pnpm only from the root `packageManager`, installs CPU-only PyTorch from the official PyTorch CPU index, asserts `torch.version.cuda is None`, retains ChromaDB and sentence-transformers, imports those RAG dependencies, and runs the ML training plus lightweight-RAG suite. The complete ChromaDB/embedding smoke path is documented at `services/ml/scripts/smoke_rag_embedding.py` but has not run. No CI job is claimed green until PR #1 receives a new successful run.
