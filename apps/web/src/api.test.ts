@@ -57,8 +57,12 @@ describe("web API client", () => {
     await expect(api("/products", { method: "POST", body: "{}" })).rejects.toMatchObject({ status: 401 });
     await api<void>("/auth/logout", { method: "POST" });
 
-    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ headers: { "content-type": "application/json" } });
-    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).headers).not.toHaveProperty("x-novo-csrf");
+    const firstRequest = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const secondRequest = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(firstRequest).toMatchObject({ method: "POST", credentials: "include", headers: { "x-novo-csrf": "csrf-test-token" } });
+    expect(secondRequest).toMatchObject({ method: "POST", credentials: "include" });
+    expect(secondRequest.headers).not.toHaveProperty("x-novo-csrf");
+    expect(secondRequest.headers).not.toHaveProperty("content-type");
   });
   it("preserves API error status, code, and message", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: "INSUFFICIENT_STOCK", message: "Stock is unavailable." } }), { status: 409, headers: { "content-type": "application/json" } })));
