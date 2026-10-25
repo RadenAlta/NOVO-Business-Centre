@@ -33,7 +33,7 @@ The original NOVO modules—Store, Shuttle, Catering, Funding, Financing, master
 - missing/invalid CSRF, foreign origin, valid mutation and multipart attachment upload;
 - cross-tenant read/write denial, role change after login, and inactive account rejection.
 
-The CI API/Web job now provisions PostgreSQL 16, applies committed migrations and runs build, all Vitest suites and lint. The prior PR head failed TypeScript compilation, so this remains **unverified in this workspace** until a fresh CI run completes.
+The CI API/Web job provisions PostgreSQL 16, applies committed Prisma migrations, and runs build, all workspace Vitest suites, and lint. At PR head `91b0a23`, GitHub CLI reported both API/Web checks and both ML checks successful (4/4; push run `40196407790`, PR run `40196411378`). This verifies the CI-executed scenarios, not every end-to-end NOVO function or deployment configuration.
 
 ## Verification limits and remaining gaps
 
