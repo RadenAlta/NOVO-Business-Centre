@@ -1,6 +1,6 @@
 # Asah Quest Traceability
 
-**Sprint 01 audit date:** 25 October 2026
+**Sprint 02 update date:** 25 October 2026
 **Rule:** a source file is not evidence of a completed quest. Each row below uses the project status vocabulary and is intentionally limited to this workspace audit.
 
 ## Main Quest (20)
@@ -32,17 +32,17 @@
 
 | ID | Area/track | Requirement | Status | Audit evidence / blocker |
 | --- | --- | --- | --- | --- |
-| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite web and Express API are distinct packages with network client source. |
+| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite client and Express API remain decoupled; browser calls now use credentialed cookies and in-memory CSRF rather than bearer storage. Runtime flow is pending. |
 | SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package exists and GitHub CI monorepo build passed on `5210332`; deployed/browser behavior remains unverified. |
-| SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express API uses /api/v1 route surface in source. |
+| SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express `/api/v1` has server-side session, CSRF and origin middleware; integration suite is awaiting execution. |
 | SQ-04 | Full-Stack | Antarmuka menggunakan CSS framework dan UI component modern | partial | Responsive CSS/UI source exists; visual browser review not run. |
 | SQ-05 | Full-Stack | Networking calls menggunakan Axios | not-started | Client uses native fetch rather than the checklist's Axios target. |
-| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | Blocked: Prisma/PostgreSQL persistence cannot be verified without a DB runtime. |
+| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | `UserSession` migration and a disposable PostgreSQL CI job are implemented; no local migration/runtime observation is available yet. |
 | SQ-07 | Full-Stack | Layanan Gen AI diakses melalui Backend, bukan langsung dari Frontend. | partial | Server-side AI route code exists; provider integration not configured/executed. |
 | SQ-08 | Full-Stack | Hasil tim Data Science (dasbor, prediksi, atau rekomendasi) tampil pada fitur yang relevan. | partial | Demand-prediction integration source exists; no running ML/API proof. |
 | SQ-09 | Full-Stack | Riwayat hasil layanan Gen AI tersimpan di database. | partial | AiInteraction persistence model/path exists; migration/runtime unverified. |
-| SQ-10 | Full-Stack | Backend memvalidasi data menggunakan schema validation (seperti Joi). | partial | Zod request validation is present in backend source. |
-| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | Error envelope and UI messages observed statically; failure journey untested. |
+| SQ-10 | Full-Stack | Backend memvalidasi data menggunakan schema validation (seperti Joi). | partial | Zod validation plus session/CSRF/trusted-origin checks are in source; runtime evidence pending. |
+| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | API error envelopes include unauthenticated, CSRF and untrusted-origin responses; runtime journey remains pending. |
 | SQ-12 | Full-Stack | Mockup dibuat sebelum pengembangan. | not-started | No pre-development mockup evidence is asserted. |
 | SQ-13 | Full-Stack | Antarmuka responsif dengan keputusan desain yang jelas, bukan sekadar mengikuti template umum. | partial | Responsive breakpoints/source patterns observed; no device test. |
 | SQ-14 | Full-Stack | Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis). | partial | Git history and PR #1 exist; all four owner-reported CI checks passed on `5210332`; team collaboration/review evidence remains incomplete. |
@@ -85,3 +85,7 @@
 | not-started | 0 | 5 | 5 |
 
 No score, course-completion claim, or `62/62` claim is made. The next status change must cite a test result or a documented manual observation.
+
+## Sprint 02 security traceability note
+
+The 62 quest rows remain in scope and retain their conservative statuses. Sprint 02 adds source/test evidence most directly to SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11. The database-backed integration cases are intentionally not marked `verified` until PostgreSQL migration and test results are observed in CI or a normal local runtime.

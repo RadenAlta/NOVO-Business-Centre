@@ -47,6 +47,19 @@ describe("web API client", () => {
     await expect(api<void>("/auth/logout", { method: "POST" })).resolves.toBeUndefined();
   });
 
+  it("clears the in-memory CSRF value after a 401 response", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "UNAUTHENTICATED", message: "Session expired." } }), { status: 401, headers: { "content-type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    setActiveSession(session);
+
+    await expect(api("/products", { method: "POST", body: "{}" })).rejects.toMatchObject({ status: 401 });
+    await api<void>("/auth/logout", { method: "POST" });
+
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ headers: { "content-type": "application/json" } });
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).headers).not.toHaveProperty("x-novo-csrf");
+  });
   it("preserves API error status, code, and message", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: "INSUFFICIENT_STOCK", message: "Stock is unavailable." } }), { status: 409, headers: { "content-type": "application/json" } })));
     await expect(api("/sales")).rejects.toMatchObject({ name: "Error", status: 409, code: "INSUFFICIENT_STOCK", message: "Stock is unavailable." });

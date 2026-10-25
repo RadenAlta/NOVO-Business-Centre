@@ -1,40 +1,42 @@
-# NOVO PRD Coverage — Sprint 01 Baseline Audit
+# NOVO PRD Coverage — Sprint 02 Authentication & Security
 
-This document records what was observed in source on `codex/sprint-01-foundation`. It does **not** declare production readiness, user acceptance, or a completed requirement. Authoritative per-requirement status is in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+This document records the code and test surfaces completed on `codex/sprint-02-auth-security`. It does **not** declare production readiness, user acceptance, or completed requirements. The authoritative 86-row status is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
 ## Source surfaces inspected
 
-| NOVO area | Static source evidence observed | Audit status |
+| NOVO area | Sprint 02 source evidence | Audit status |
 | --- | --- | --- |
-| Authentication, tenants and roles | Express authentication middleware, JWT/cookie handling, tenant-bound active-user lookup and role middleware. | partial |
-| Master data and cooperative membership | Prisma models/routes for users, membership and master data. | partial |
+| Authentication, tenants and roles | PostgreSQL `UserSession` migration; opaque SHA-256-hashed session, revocation, current-user role lookup and tenant-match middleware; `/me` browser session restoration. | partial |
+| Browser session security | HttpOnly cookie-only authentication; no browser bearer/session storage; memory-only CSRF token; trusted-origin checks and CSRF protection for cookie mutations. | partial |
+| Master data and cooperative membership | Existing Prisma models/routes; integration suite uses master-data mutation as a secured tenant/RBAC negative path. | partial |
 | Store/POS and inventory | Product, stock and sale schema/routes/screens, including transactional sale source. | partial |
 | Shuttle | Subscription, invoice, payment and settlement schema/routes/screens. | partial |
 | Catering | Catering order routes/screens. | partial |
 | Funding | Savings-account and append-only ledger source. | partial |
 | Financing and purchasing extension | Financing/receivable source and separately named purchasing extension. | partial |
-| Attachments and audit | Attachment validation/signature/hash code and audit-model surface. | partial |
+| Attachments and audit | Signature/hash validation and tenant-scoped download source; integration suite defines authenticated multipart upload. | partial |
 | Reporting and dashboard | Web reporting surface plus Streamlit dashboard/CSV workflow. | partial |
 | ML, generative AI and RAG | FastAPI service, original TF-IDF models, model comparison/evaluation and optional RAG/provider paths. | partial |
 | SIMS sync, backup/restore | No qualifying adapter/drill was observed. | not-started |
 
 ## Requirements retained from the PRDs
 
-The audit preserves the original NOVO modules—Store, Shuttle, Catering, Funding, Financing, master data, membership, reporting, SIMS sync and backup. Purchasing is documented as an extension rather than a replacement for those modules. The 14 functional and 10 non-functional requirements remain tracked individually in `IMPLEMENTATION_STATUS.md`.
+The original NOVO modules—Store, Shuttle, Catering, Funding, Financing, master data, membership, reporting, SIMS sync and backup—remain intact. Purchasing is still an extension, not a replacement. All 14 functional, 10 non-functional, 20 Main Quest and 42 Side Quest entries remain tracked in the implementation-status and quest-traceability documents.
 
-## Verification limits and known gaps
+## Sprint 02 integration coverage designed
 
-- Dependencies could not install because this sandbox blocks pnpm project-store symlink creation (`EPERM`, exit `-4048`).
-- Bundled Python compiled all ML source and test modules successfully, but has no installed `pytest` or ML dependencies; pytest, FastAPI startup, PostgreSQL migrations and Compose validation could not run.
-- No browser end-to-end flow, deployment, production backup/restore, SIMS unavailability test, accessibility test, performance measurement or external-channel test was observed.
-- The source contains a bearer/sessionStorage compatibility path, no server-side revocation and no demonstrated CSRF defense. See `docs/SECURITY.md`.
+`apps/api/src/security.integration.test.ts` is designed to run only against a disposable `novo_ci` or `novo_test` PostgreSQL database. It covers:
 
-## What a later sprint must prove
+- first-workspace bootstrap, cookie flags, no token JSON response and hash-only session persistence;
+- cookie `/me` restoration, logout revocation, and replay rejection;
+- bearer-only, altered-cookie and expired-session rejection;
+- missing/invalid CSRF, foreign origin, valid mutation and multipart attachment upload;
+- cross-tenant read/write denial, role change after login, and inactive account rejection.
 
-Use a normal local/CI runtime to run install, database generation/migration, API/web build/lint/test, Python compilation/pytest and at least one tenant/RBAC negative test. Only then promote individual rows from `partial` or `blocked` to `verified` with the exact evidence.
+The CI API/Web job now provisions PostgreSQL 16, applies the committed migration and runs build, all Vitest suites and lint. This is designed verification coverage; it remains **unverified in this workspace** until the new CI run completes.
 
-## CI evidence and test baseline (25 October 2026)
+## Verification limits and remaining gaps
 
-The repository owner supplied the passing GitHub CLI checks for commit `5210332`: `push` run `40156431701` and `pull_request` run `40156434593`, with `api-and-web` and `ml` passing on both triggers (**4/4 PASS**). The earlier pnpm/policy and Vitest-discovery blockers are resolved in those checks.
-
-Unit tests cover Contracts API/role invariants, Web API fetch responses/errors, existing API helpers, and ML retrieval fallback; this is useful baseline coverage, not complete feature verification. The CI configuration does not execute `pnpm lint`, browser E2E, PostgreSQL/Prisma migrations, production backup/restore, tenant/RBAC negative integration cases, or the separate full Chroma embedding smoke test. Those remain future acceptance gates.
+- Local pnpm/Prisma/test/lint commands are blocked by the workspace sandbox's project-store symlink `EPERM`; Docker/PostgreSQL are unavailable here.
+- No browser E2E, deployment, production backup/restore, SIMS-unavailability, accessibility, performance, or external-channel test has been observed.
+- The CSRF/origin/session controls are source-implemented but not security certification. Confirm PR checks, deployment TLS/CORS configuration, object-storage malware scanning, and a production threat review before release.

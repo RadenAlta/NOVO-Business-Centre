@@ -28,7 +28,7 @@ const err = (cause: unknown) => cause instanceof ApiError ? cause.message : "Lay
 const formValue = (form: FormData, name: string) => String(form.get(name) ?? "");
 
 function useGet<T>(key: string, path: string, session: Session) {
-  return useQuery({ queryKey: [key], queryFn: () => api<T>(path, {}) });
+  return useQuery({ queryKey: [key, session.tenant.id], queryFn: () => api<T>(path) });
 }
 
 function Page({ title, subtitle, children, action }: { title: string; subtitle: string; children: ReactNode; action?: ReactNode }) {

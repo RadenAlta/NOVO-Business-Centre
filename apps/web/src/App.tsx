@@ -47,6 +47,12 @@ export default function App() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    const clearBrowserSession = () => { clearActiveSession(); setSession(null); };
+    window.addEventListener("novo:unauthenticated", clearBrowserSession);
+    return () => window.removeEventListener("novo:unauthenticated", clearBrowserSession);
+  }, []);
+
+  useEffect(() => {
     let current = true;
     void api<Session>("/me").then((next) => {
       if (!current) return;
