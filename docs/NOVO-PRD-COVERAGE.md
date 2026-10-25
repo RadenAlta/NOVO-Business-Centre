@@ -1,28 +1,34 @@
-# NOVO PRD coverage
+# NOVO PRD Coverage — Sprint 01 Baseline Audit
 
-This document separates implemented vertical slices from source requirements that still need product work. It is an engineering inventory, not a statement that any educational checklist is complete.
+This document records what was observed in source on `codex/sprint-01-foundation`. It does **not** declare production readiness, user acceptance, or a completed requirement. Authoritative per-requirement status is in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
-## Available now
+## Source surfaces inspected
 
-| Area | Working source coverage | Deliberate boundary |
+| NOVO area | Static source evidence observed | Audit status |
 | --- | --- | --- |
-| Identity and access | PostgreSQL schema, tenant isolation, canonical NOVO roles, bcrypt passwords, JWT authentication, browser HttpOnly cookie, audit events | Cookie is not a database-backed/revocable session; role assignment UI and password-reset flow are absent |
-| Master Data | Manual create/list/update/activate for students, teachers, employees; unique typed identifiers; source/provenance fields; Master Data web screen | Excel import and SIMS synchronisation are not implemented |
-| Membership | Cooperative member model may link to a master identity; a student identity is rejected; linked name/contact fields come from that identity | Membership creation form and rigorous migration of legacy unlinked records are unfinished |
-| SO Store | Product catalogue, stock movements, POS checkout, low-stock dashboard | HPP/cost layers, supplier/category management, cash-closing and formal stock-opname remain |
-| Shuttle | Routes, subscriptions, invoices, guarded payments, settlements | Vendor share calculation, partial-payment UX, settlement evidence workflow and operational trip attendance remain |
-| Catering | Order creation and fulfilment state | Vendor, menu/package, recipient/period fee, invoice and reconciliation workflows are not yet modelled |
-| Funding | Savings account and append-only credit/debit ledger | Mandatory/voluntary/other categories, restricted funds and reconciliation are not yet modelled |
-| Financing | Application, receivable schedule and status records | Procurement-oriented financing/HPP workflow, approval evidence, allocations and reconciliation remain |
-| Purchasing | Request workflow is explicitly labelled as an extension | It is not claimed as a formal source PRD baseline module |
-| Attachments and audit | Type, binary-signature and size checks, SHA-256, filename sanitisation, tenant-scoped download and audit metadata | No malware scanner, private object storage, signed URLs or per-business-entity authorization policy |
-| Reporting and integration | Operations summary and separate Streamlit analytics dashboard with synthetic-data labeling | Cross-unit reports, backup/restore, SIMS sync and a deployed environment remain |
+| Authentication, tenants and roles | Express authentication middleware, JWT/cookie handling, tenant-bound active-user lookup and role middleware. | partial |
+| Master data and cooperative membership | Prisma models/routes for users, membership and master data. | partial |
+| Store/POS and inventory | Product, stock and sale schema/routes/screens, including transactional sale source. | partial |
+| Shuttle | Subscription, invoice, payment and settlement schema/routes/screens. | partial |
+| Catering | Catering order routes/screens. | partial |
+| Funding | Savings-account and append-only ledger source. | partial |
+| Financing and purchasing extension | Financing/receivable source and separately named purchasing extension. | partial |
+| Attachments and audit | Attachment validation/signature/hash code and audit-model surface. | partial |
+| Reporting and dashboard | Web reporting surface plus Streamlit dashboard/CSV workflow. | partial |
+| ML, generative AI and RAG | FastAPI service, original TF-IDF models, model comparison/evaluation and optional RAG/provider paths. | partial |
+| SIMS sync, backup/restore | No qualifying adapter/drill was observed. | not-started |
 
-## Privacy and data discipline
+## Requirements retained from the PRDs
 
-Only synthetic seed and training data are included. Do not add real student, family, employee, customer, bank, payment-card or health records without separate consent, retention, authorization and security review.
+The audit preserves the original NOVO modules—Store, Shuttle, Catering, Funding, Financing, master data, membership, reporting, SIMS sync and backup. Purchasing is documented as an extension rather than a replacement for those modules. The 14 functional and 10 non-functional requirements remain tracked individually in `IMPLEMENTATION_STATUS.md`.
 
-## Status vocabulary
+## Verification limits and known gaps
 
-- **Working source coverage** means a coherent code path and schema are present.
-- **Boundary** means an explicit gap, simplification or verification limitation. It must not be represented as delivered functionality.
+- Dependencies could not install because this sandbox blocks pnpm project-store symlink creation (`EPERM`, exit `-4048`).
+- Python resolves only to an inaccessible Windows app alias, and Docker is unavailable. ML tests, FastAPI startup, PostgreSQL migrations and Compose validation could not run.
+- No browser end-to-end flow, deployment, production backup/restore, SIMS unavailability test, accessibility test, performance measurement or external-channel test was observed.
+- The source contains a bearer/sessionStorage compatibility path, no server-side revocation and no demonstrated CSRF defense. See `docs/SECURITY.md`.
+
+## What a later sprint must prove
+
+Use a normal local/CI runtime to run install, database generation/migration, API/web build/lint/test, Python compilation/pytest and at least one tenant/RBAC negative test. Only then promote individual rows from `partial` or `blocked` to `verified` with the exact evidence.

@@ -1,93 +1,87 @@
-# Asah checklist traceability
+# Asah Quest Traceability
 
-Status reflects source implementation at this revision, not a claim of assessment completion. **Implemented** means source code is present; **Partial** means a bounded implementation has a named operational or verification gap; **Gap** means it is deliberately not claimed. Test status is updated only after commands actually pass.
+**Sprint 01 audit date:** 25 October 2026
+**Rule:** a source file is not evidence of a completed quest. Each row below uses the project status vocabulary and is intentionally limited to this workspace audit.
 
 ## Main Quest (20)
 
-| Track | Requirement | Status | Evidence |
-| --- | --- | --- | --- |
-| Full-stack | Specific UMKM problem | Implemented | `README.md`, `docs/DATA-PROBLEM.md` |
-| Full-stack | At least two core features | Implemented | Store, shuttle, catering, funding, financing modules |
-| Full-stack | Input causes matching result | Implemented | Express mutations and responsive React forms |
-| Full-stack | Clear success/failure/loading state | Partial | Most UI mutations have messages; formal browser E2E pending |
-| Full-stack | Usable with clear guide | Partial | README and screen labels; usability review pending |
-| Full-stack | Public browser/mobile access | Gap | Responsive build exists, but no deployment is configured |
-| Gen AI | Custom data-suited AI model | Implemented | Original TF-IDF intent-training pipeline |
-| Gen AI | Preprocessing before model | Implemented | TF-IDF pipeline and validated input |
-| Gen AI | Dataset/source documented | Implemented | Synthetic corpus and caveat in ML README |
-| Gen AI | Additional proprietary GenAI feature | Partial | Server-side OpenAI Responses integration needs user-owned key |
-| Gen AI | Compare two model configurations | Implemented | Logistic Regression vs LinearSVC, endpoint report |
-| Gen AI | FastAPI/Flask online serving | Implemented | FastAPI service with OpenAPI docs |
-| Data Science | Business problem/data role | Implemented | `docs/DATA-PROBLEM.md` |
-| Data Science | Business questions | Implemented | Revenue, category, product, low-stock and demand questions |
-| Data Science | Data wrangling | Implemented | CSV schema/type validation and filters in Streamlit |
-| Data Science | Analyze data for business question | Implemented | Interactive dashboard computations |
-| Data Science | Understandable findings/recommendation | Partial | Direct indicators/exception queue; no real-data finding claimed |
-| Data Science | Share usable data/results | Implemented | CSV upload/filter/export + data dictionary |
-| Data Science | Verify data/results | Partial | Input validation and source disclosure; production DQ checks pending |
-| Data Science | Model prediction in feature | Implemented | Demand web card calls the backend ML proxy and presents its caveat |
+| ID | Area/track | Requirement | Status | Audit evidence / blocker |
+| --- | --- | --- | --- | --- |
+| FU-01 | Full-Stack | Menyelesaikan satu masalah UMKM yang jelas untuk pengguna yang spesifik. | partial | Static documentation/source maps NOVO to cooperative business-centre workflows. |
+| FU-02 | Full-Stack | Memiliki minimal 2 fitur utama yang menjawab masalah tersebut. | partial | Static audit observes several core business modules, not runtime-verified. |
+| FU-03 | Full-Stack | Memberikan hasil yang sesuai dengan aksi atau input pengguna. | partial | Source mutations and form flows are present; browser result state was not exercised. |
+| FU-04 | Full-Stack | Memberi tanda yang jelas saat aksi berhasil, gagal, atau sedang diproses. | partial | Static loading/error UI patterns observed; no browser usability verification. |
+| FU-05 | Full-Stack | Mudah digunakan pelaku UMKM dengan panduan yang jelas. | partial | README and labeled screens exist; no independent usability test. |
+| FU-06 | Full-Stack | Dapat diakses publik secara online melalui browser, termasuk di ponsel. | blocked | Blocked: no public deployment is configured or testable in this workspace. |
+| GE-01 | Gen AI | Menjelaskan permasalahan yang mau diselesaikan oleh model yang akan dibuat di README | partial | README/data-problem documentation exists; model-problem narrative was not independently reviewed. |
+| GE-02 | Gen AI | Membangun model AI yang disesuaikan dengan keadaan data yang disediakan oleh tim Data Science. | partial | Original TF-IDF classifier training code exists; training was not executed in this environment. |
+| GE-03 | Gen AI | Menerapkan tahapan preprocessing data sebelum digunakan oleh model AI. | partial | Static preprocessing via TF-IDF/validation observed; no training execution proof. |
+| GE-04 | Gen AI | Diperbolehkan menggunakan API data publik, sumber data, dataset, library, maupun data pribadi apa pun, dengan mencantumkan sumber setiap item yang digunakan di README. | partial | Synthetic corpus/source documentation exists; source/runtime evaluation not run. |
+| GE-05 | Gen AI | Membangun fitur tambahan generatif AI yang memanfaatkan API model proprietary seperti ChatGPT, Gemini, dll. | partial | Optional provider-based assistant code exists; provider/key path not configured. |
+| GE-06 | Gen AI | Membandingkan minimal 2 model atau konfigurasi dengan metrik yang sama, lalu menuliskan tabel perbandingan dan alasan pemilihan model terbaik di README. | partial | Logistic Regression versus LinearSVC evaluation code exists; results not regenerated. |
+| GE-07 | Gen AI | Bekerja sama dengan anggota tim dari Full-stack dalam mengembangkan REST API menggunakan FastAPI atau Flask untuk melakukan serving model AI yang dapat diakses secara online oleh back-end aplikasi. | partial | FastAPI endpoints exist; Python runtime is unavailable to serve or test them. |
+| DA-01 | Data Science | Mengidentifikasi dan menganalisis bersama tim masalah UMKM yang akan diselesaikan dan menjelaskan peran data dalam solusi tersebut. | partial | Data-problem documentation and dashboard code exist; no dashboard runtime. |
+| DA-02 | Data Science | Merumuskan pertanyaan bisnis yang dapat dijawab melalui analisis data. | partial | Static KPIs/questions observed in dashboard/source documentation. |
+| DA-03 | Data Science | Melakukan seluruh tahapan pengolahan data (data wrangling). | partial | CSV validation and transformations are present in source; unexecuted. |
+| DA-04 | Data Science | Mengolah dan menganalisis data untuk menjawab pertanyaan bisnis, disertai penjelasan proses dan hasilnya. | partial | Dashboard computations and filters are present in source; unexecuted. |
+| DA-05 | Data Science | Menyajikan temuan dan rekomendasi yang mudah dipahami serta relevan dengan solusi tim. | partial | Static indicators exist; no observed finding/recommendation based on a real run. |
+| DA-06 | Data Science | Menyediakan data atau hasil analisis dalam bentuk yang dapat digunakan oleh anggota tim lain, disertai penjelasan cara penggunaannya. | partial | CSV upload/dashboard sharing surface exists; no hosted or runtime proof. |
+| DA-07 | Data Science | Memeriksa ketepatan data dan hasil analisis sebelum digunakan dalam solusi akhir. | partial | Input validation/source disclosure exists; no data-quality verification execution. |
 
 ## Side Quest (42)
 
-| # | Track | Requirement | Status | Evidence / gap |
-| ---: | --- | --- | --- | --- |
-| 1 | FS | Decoupled front-end/back-end | Implemented | Vite web + Express API networking |
-| 2 | FS | Module bundler | Implemented | Vite |
-| 3 | FS | Express + versioned API URL | Implemented | `apps/api`, `/api/v1` |
-| 4 | FS | CSS framework + modern UI components | Partial | Tailwind + responsive component design; no dedicated UI-component package |
-| 5 | FS | Axios networking | Gap | Uses native Fetch; not equivalent to Axios checklist wording |
-| 6 | FS | Persistent data | Implemented | PostgreSQL Prisma schema/migrations target |
-| 7 | FS | GenAI through backend | Implemented | `/ai/assist` server-only provider call |
-| 8 | FS | Data Science result in relevant feature | Implemented | Demand card calls tenant-protected backend ML proxy |
-| 9 | FS | GenAI history in database | Implemented | `AiInteraction` model writes requests/responses |
-| 10 | FS | Backend schema validation | Implemented | Zod (explicitly allowed by “such as Joi”) |
-| 11 | FS | Failures clearly handled | Implemented | Error envelope, UI messages, provider/ML unavailable states |
-| 12 | FS | Mockup before development | Gap | No pre-development mockup is asserted |
-| 13 | FS | Responsive design decisions | Implemented | Mobile sidebar/grid breakpoints |
-| 14 | FS | Git + hosted Git history | Partial | Local Git repo initialised; remote/PR history not created |
-| 15 | FS | API/data contract agreed across tracks | Partial | Written contract exists; no team agreement evidence |
-| 16 | FS | Free-tier deployment | Gap | Deployment-ready notes only; not deployed |
-| 17 | Gen AI | Class-balance check/remediation | Implemented | Four synthetic classes have equal count; documented corpus |
-| 18 | Gen AI | Tuning/performance improvement | Gap | No tuning experiment is claimed |
-| 19 | Gen AI | Held-out evaluation with metric | Implemented | Macro F1 / RMSE in `/v1/evaluations` |
-| 20 | Gen AI | Additional complementary model | Implemented | Demand regressor complements intent classifier |
-| 21 | Gen AI | RAG: embed + vector DB + generation | Partial | Chroma + sentence-transformer + optional provider generation; provider/local model runtime required |
-| 22 | Gen AI | Intent routing at least four intents | Implemented | PRODUCT, BOOKING, COMPLAINT, PAYMENT; complaint escalates |
-| 23 | Gen AI | Structured prompt | Implemented | Server system instructions with context restriction |
-| 24 | Gen AI | Test 10 out-of-scope questions/refusal | Gap | Dedicated OOD guardrail suite not built |
-| 25 | Gen AI | API contract agreed across tracks | Partial | Written contract exists; no team agreement evidence |
-| 26 | Gen AI | Invalid input/AI quota failure | Implemented | Zod and explicit 502/503 handling |
-| 27 | Gen AI | WhatsApp/Telegram channel | Gap | No external channel integration |
-| 28 | Gen AI | Testable API documentation | Implemented | FastAPI `/docs` OpenAPI |
-| 29 | DS | Interactive dashboard | Implemented | Streamlit app |
-| 30 | DS | Relevant indicators and filters | Implemented | Date/category controls and KPI/exception views |
-| 31 | DS | File/source refresh | Implemented | CSV upload path |
-| 32 | DS | Primary-data priority/dummy labelling | Implemented | Source selector and visible synthetic label |
-| 33 | DS | Dashboard embedded/integrated in web | Partial | Web link opens dashboard; no authenticated embed |
-| 34 | DS | Data needs agreed with GenAI | Partial | Contract/data dictionary exist; no team agreement evidence |
-| 35 | DS | Label/transformation/feature engineering | Implemented | Intent labels; demand features; validated parsing |
-| 36 | DS | Data dictionary | Implemented | `apps/dashboard/DATA_DICTIONARY.md` |
-| 37 | DS | Train/test split and leakage prevention | Implemented | Stratified intent split; separate demand holdout |
-| 38 | DS | Appropriate prediction model | Implemented | Intent classifier and demand regressor |
-| 39 | DS | Feature engineering + performance effect | Partial | Features/evaluation exist; no ablation study |
-| 40 | DS | Unseen-test evaluation | Implemented | Held-out F1 and RMSE |
-| 41 | DS | Compare models/limitations | Implemented | Two candidate reports + explicit caveat |
-| 42 | DS | Prediction integrated in web | Implemented | Demand card in web overview calls the backend proxy |
+| ID | Area/track | Requirement | Status | Audit evidence / blocker |
+| --- | --- | --- | --- | --- |
+| SQ-01 | Full-Stack | Front-end dan Back-end dibangun terpisah (decoupled) dan saling terhubung memalui networking call | partial | Vite web and Express API are distinct packages with network client source. |
+| SQ-02 | Full-Stack | Front-end dibangun dengan module bundler (seperti Vite atau Webpack) | partial | Vite configuration/package is present; production build did not run. |
+| SQ-03 | Full-Stack | Back-end dibangun dengan Express dan URL API sesuai konvensi (misal: /api/v1/resource) | partial | Express API uses /api/v1 route surface in source. |
+| SQ-04 | Full-Stack | Antarmuka menggunakan CSS framework dan UI component modern | partial | Responsive CSS/UI source exists; visual browser review not run. |
+| SQ-05 | Full-Stack | Networking calls menggunakan Axios | not-started | Client uses native fetch rather than the checklist's Axios target. |
+| SQ-06 | Full-Stack | Data tersimpan secara persisten. | blocked | Blocked: Prisma/PostgreSQL persistence cannot be verified without a DB runtime. |
+| SQ-07 | Full-Stack | Layanan Gen AI diakses melalui Backend, bukan langsung dari Frontend. | partial | Server-side AI route code exists; provider integration not configured/executed. |
+| SQ-08 | Full-Stack | Hasil tim Data Science (dasbor, prediksi, atau rekomendasi) tampil pada fitur yang relevan. | partial | Demand-prediction integration source exists; no running ML/API proof. |
+| SQ-09 | Full-Stack | Riwayat hasil layanan Gen AI tersimpan di database. | partial | AiInteraction persistence model/path exists; migration/runtime unverified. |
+| SQ-10 | Full-Stack | Backend memvalidasi data menggunakan schema validation (seperti Joi). | partial | Zod request validation is present in backend source. |
+| SQ-11 | Full-Stack | Menangani kegagalan aplikasi maupun layanan Gen AI dan Data Science dengan pesan yang jelas. | partial | Error envelope and UI messages observed statically; failure journey untested. |
+| SQ-12 | Full-Stack | Mockup dibuat sebelum pengembangan. | not-started | No pre-development mockup evidence is asserted. |
+| SQ-13 | Full-Stack | Antarmuka responsif dengan keputusan desain yang jelas, bukan sekadar mengikuti template umum. | partial | Responsive breakpoints/source patterns observed; no device test. |
+| SQ-14 | Full-Stack | Riwayat kode dikelola dengan Git dan GitHub (atau layanan sejenis). | partial | Git history and branch exist; remote PR/push from this runtime remains unverified. |
+| SQ-15 | Full-Stack | Kontrak API atau format data disepakati dengan tim Gen AI dan Data Science sebelum pengembangan. | partial | Written API contract exists; no independent agreement record. |
+| SQ-16 | Full-Stack | Aplikasi di-deploy ke layanan gratis atau free tier (seperti Netlify, Render, Neon, atau Cloudflare Pages). | blocked | Blocked: no free-tier deployment is available to verify. |
+| SQ-17 | Gen AI | Memeriksa keseimbangan jumlah data antarkelas pada dataset dari tim Data Science dan menanganinya JIKA tidak seimbang, lalu menjelaskan penanganannya di README. | partial | Synthetic intent corpus/class-balance logic exists; training not executed. |
+| SQ-18 | Gen AI | Menerapkan teknik untuk meningkatkan kinerja model, seperti augmentasi data atau penyetelan hyperparameter, lalu menuliskan pengaruhnya terhadap hasil model di README. | not-started | No tuning experiment or comparison evidence was observed. |
+| SQ-19 | Gen AI | Menguji model menggunakan data uji yang disisihkan dengan metrik yang sesuai dengan jenis tugasnya, seperti F1-score untuk klasifikasi atau precision@k untuk rekomendasi, lalu menuliskan hasilnya di README. | partial | Held-out metric code exists; metrics not regenerated in this sprint. |
+| SQ-20 | Gen AI | Melatih model tambahan yang melengkapi solusi, misalnya model klasifikasi sentimen ulasan pelanggan dengan minimal 2 kelas, yaitu positif dan negatif. Hasilnya dapat ditampilkan di aplikasi web tim atau di dasbor tim Data Science. | partial | Demand regressor complements intent classifier in source. |
+| SQ-21 | Gen AI | Membangun sistem RAG yang terdiri dari model generation (API proprietary atau SLM/LLM open-source yang di-host lokal), model embedding, dan vector database (ChromaDB, FAISS, Pinecone, Weaviate). | partial | RAG/vector-db design exists; embedding/provider runtime was not configured. |
+| SQ-22 | Gen AI | Menjadikan model AI yang dilatih di Main Quest sebagai model klasifikasi intent dengan minimal 4 intent, seperti tanya produk, pemesanan, keluhan, dan lainnya. Hasil klasifikasi dipakai untuk mengarahkan pertanyaan ke alur yang sesuai, misalnya pertanyaan produk dijawab oleh sistem RAG dan keluhan diteruskan ke pemilik usaha. | partial | At least four intent routes are present in source; endpoint untested. |
+| SQ-23 | Gen AI | Menyusun prompt terstruktur (template, few-shot) agar hasil konsisten dengan gaya bahasa usaha. | partial | Structured prompt construction is present in server-side AI code. |
+| SQ-24 | Gen AI | Membatasi chatbot agar menolak pertanyaan di luar konteks usaha dengan sopan, lalu mengujinya menggunakan minimal 10 pertanyaan di luar konteks dan menuliskan hasilnya di README. | not-started | No ten-question out-of-scope/refusal test suite observed. |
+| SQ-25 | Gen AI | Menyepakati kontrak API bersama tim Full-stack, meliputi endpoint, format request/response, dan kode error, sebelum pengembangan dimulai. | partial | Written API contract exists; no independent agreement record. |
+| SQ-26 | Gen AI | Menangani input yang tidak valid dan kegagalan layanan AI, termasuk saat API model generatif lambat atau mencapai batas kuota gratis, dengan pesan yang jelas bagi pengguna. | partial | Validation/provider-error handling is present statically; not executed. |
+| SQ-27 | Gen AI | Mengintegrasikan solusi ke kanal yang dipakai UMKM, seperti Telegram atau WhatsApp. Untuk WhatsApp, tim dapat menggunakan nomor uji gratis dari WhatsApp Cloud API. | not-started | No WhatsApp or Telegram channel integration observed. |
+| SQ-28 | Gen AI | Menyediakan dokumentasi API yang dapat dicoba langsung, seperti Swagger atau OpenAPI. | partial | FastAPI docs route exists in source; service cannot start in current Python runtime. |
+| SQ-29 | Data Science | Mengembangkan dasbor interaktif menggunakan Streamlit atau teknologi visualisasi lain yang sesuai. | partial | Streamlit dashboard source exists; not executed. |
+| SQ-30 | Data Science | Menampilkan indikator bisnis dan menyediakan filter yang relevan untuk membantu pengguna memahami kondisi bisnis. | partial | Dashboard KPI/filter source exists; not executed. |
+| SQ-31 | Data Science | Menyediakan pembaruan data melalui unggahan file atau koneksi ke sumber data. | partial | CSV refresh/upload source exists; not executed. |
+| SQ-32 | Data Science | Memprioritaskan penggunaan data primer yang diperoleh langsung dari UMKM. Jika data primer tidak tersedia atau belum mencukupi, boleh menggunakan data dummy atau data publik yang sesuai dengan karakteristik data asli. | partial | Synthetic data labeling/source-selection patterns exist in source. |
+| SQ-33 | Data Science | Mengintegrasikan dasbor ke aplikasi web bersama tim Full-stack. | partial | Web dashboard link/integration code exists; no authenticated runtime check. |
+| SQ-34 | Data Science | Menyepakati kebutuhan dan format data bersama tim Gen AI. Jika data primer tidak mencukupi, boleh menggunakan  data dummy atau data publik. Penggunaan data dummy atau data publik harus diberi label yang jelas, disertai penjelasan sumber atau cara pembuatannya serta keterbatasan penggunaannya. | partial | Data dictionary/contract exists; no independent agreement record. |
+| SQ-35 | Data Science | Melakukan pelabelan, transformasi, atau feature engineering sesuai kebutuhan model. | partial | Labeling/features code exists; no executed data pipeline. |
+| SQ-36 | Data Science | Menyusun kamus data (data dictionary) atau penjelasan isi dataset agar mudah digunakan. | partial | Dashboard data dictionary exists in repository. |
+| SQ-37 | Data Science | Menyiapkan pembagian data yang sesuai untuk training dan testing model serta mencegah kebocoran data. | partial | Train/test split logic exists; training did not execute. |
+| SQ-38 | Data Science | Mengembangkan model classification, regression, forecasting, dan model lain yang sesuai kebutuhan fitur. | partial | Prediction model selection is present in source; unverified at runtime. |
+| SQ-39 | Data Science | Melakukan feature engineering  dan mengevaluasi pengaruhnya terhadap kinerja model. | partial | Feature engineering exists; no ablation/performance-effect proof. |
+| SQ-40 | Data Science | Menguji model pada data yang tidak digunakan untuk training dengan pembagian data dan metrik evaluasi yang sesuai. | partial | Unseen-test evaluation code exists; no fresh evaluation result. |
+| SQ-41 | Data Science | Membandingkan hasil model dan menjelaskan keterbatasannya jika menguji lebih dari satu model. | partial | Two-model comparison and caveat code exists; execution is unverified. |
+| SQ-42 | Data Science | Mengintegrasikan hasil prediksi ke aplikasi web bersama tim Full-stack. | partial | Prediction web card/proxy source exists; integration untested. |
 
-## Honest current total
+## Quest subtotal
 
-Source coverage is **not 62/62**. At this point, 42 checklist rows have an implementation basis, 13 are partial, and 7 are gaps. These counts are informational traceability, not a course score. Deployment, formal browser tests, real-data governance, a committed Git remote, OOD guardrails, and a human review of the demand UI remain the biggest unfinished items.
-## Verification completed in this workspace
+| Status | Main Quest | Side Quest | Total |
+| --- | ---: | ---: | ---: |
+| verified | 0 | 0 | 0 |
+| partial | 19 | 35 | 54 |
+| blocked | 1 | 2 | 3 |
+| not-started | 0 | 5 | 5 |
 
-- The latest Prisma schema validation and Prisma Client generation with `--no-engine` completed using a local development connection string.
-- The latest changed API and web modules passed TypeScript syntax transpilation.
-- Focused strict TypeScript checks passed for the latest API entrypoint, authentication middleware, synthetic seed, and the complete web project.
-- API unit tests previously passed: 2 tests in `apps/api/src/lib.test.ts`.
-- Python syntax compilation previously passed for all ML service modules and its test module.
-
-## Verification not claimed
-
-- A full API TypeScript run did not complete inside this session's command window after the latest schema changes; it requires a normal local/CI run before release.
-- The ML test suite was not run because the bundled Python runtime does not include `pytest` or `scikit-learn`.
-- No PostgreSQL container, migration application, browser end-to-end test, production deployment, or external messaging channel was available in this workspace.
-- `pnpm --filter @novo/web build` is blocked in this desktop sandbox because pnpm cannot create its project-store symlink. A direct Vite build began transforming the app but reached the command time limit before its final exit status. Run the normal build in a non-sandboxed local/CI environment.
+No score, course-completion claim, or `62/62` claim is made. The next status change must cite a test result or a documented manual observation.
