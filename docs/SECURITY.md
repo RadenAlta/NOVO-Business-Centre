@@ -8,3 +8,7 @@
 - Attachment uploads are size-limited, filename-sanitised, type allow-listed, checked against PDF/JPEG/PNG/WEBP binary signatures, and SHA-256 recorded. The local filesystem is for development only. Production still needs private object storage, malware scanning, per-entity authorization, signed download URLs, retention policy, and key rotation.
 - Run TLS at the ingress, restrict CORS to the deployed web origin, use secure cookies, rotate secrets, and review audit events regularly.
 - Financial records are append-only ledgers. Corrections should be compensating entries, not database edits.
+
+## Sprint 01 audit record — 25 October 2026
+
+This source review was not able to execute the API in the current sandbox. The role, active-account and tenant checks described above were observed in `apps/api/src/auth.ts`; they still need negative integration tests. The web client (`apps/web/src/api.ts` and `apps/web/src/auth.tsx`) sends a bearer token stored in `sessionStorage` alongside credentialed cookie calls. Treat that as an XSS exposure until the application moves to server-side revocable sessions or another documented token strategy. Cookie-authenticated state-changing routes also need a production CSRF/origin defense and tests. These are open security items, not release approval.
