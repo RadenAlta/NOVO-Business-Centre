@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { inflateRawSync } from "node:zlib";
 
 import ExcelJS from "exceljs";
 import { z } from "zod";
@@ -85,6 +86,14 @@ export type ImportSummary = {
   error: number;
 };
 
+type ArchiveEntry = {
+  name: string;
+  compressionMethod: number;
+  compressedSize: number;
+  uncompressedSize: number;
+  localHeaderOffset: number;
+};
+
 function importError(code: string, message: string, details?: unknown): HttpError {
   return new HttpError(400, code, message, details);
 }
@@ -137,7 +146,7 @@ function safeCellText(cell: ExcelJS.Cell, row: number, field: string, issues: Im
   return normalizeText(cell.text ?? "");
 }
 
-function inspectXlsxArchive(bytes: Buffer): void {
+function inspectXlsxArchive(bytes: Buffer): ArchiveEntry[] {
   if (bytes.byteLength < 22 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     throw importError("INVALID_XLSX", "Upload a valid .xlsx workbook.");
   }
@@ -165,16 +174,19 @@ function inspectXlsxArchive(bytes: Buffer): void {
   let cursor = centralDirectoryOffset;
   let totalUncompressed = 0;
   const names: string[] = [];
+  const archiveEntries: ArchiveEntry[] = [];
   for (let index = 0; index < entries; index += 1) {
     if (cursor + 46 > bytes.byteLength || bytes.readUInt32LE(cursor) !== 0x02014b50) {
       throw importError("INVALID_XLSX", "Workbook ZIP directory is corrupt.");
     }
     const flags = bytes.readUInt16LE(cursor + 8);
+    const compressionMethod = bytes.readUInt16LE(cursor + 10);
     const compressedSize = bytes.readUInt32LE(cursor + 20);
     const uncompressedSize = bytes.readUInt32LE(cursor + 24);
     const filenameLength = bytes.readUInt16LE(cursor + 28);
     const extraLength = bytes.readUInt16LE(cursor + 30);
     const commentLength = bytes.readUInt16LE(cursor + 32);
+    const localHeaderOffset = bytes.readUInt32LE(cursor + 42);
     const filenameStart = cursor + 46;
     const filenameEnd = filenameStart + filenameLength;
     if (filenameEnd > bytes.byteLength || flags & 1 || compressedSize === 0 && uncompressedSize > 0) {
@@ -188,12 +200,66 @@ function inspectXlsxArchive(bytes: Buffer): void {
     if (totalUncompressed > 10 * 1024 * 1024 || (compressedSize > 0 && uncompressedSize / compressedSize > 100)) {
       throw importError("IMPORT_ARCHIVE_TOO_LARGE", "Workbook expands beyond the safe import limit.");
     }
-    names.push(name.toLowerCase());
+    const normalizedName = name.toLowerCase();
+    names.push(normalizedName);
+    archiveEntries.push({ name: normalizedName, compressionMethod, compressedSize, uncompressedSize, localHeaderOffset });
     cursor = filenameEnd + extraLength + commentLength;
   }
 
   if (!names.includes("[content_types].xml") || !names.includes("xl/workbook.xml") || names.some((name) => name.includes("vbaproject") || name.includes("externallink"))) {
     throw importError("UNSAFE_XLSX", "Macro-enabled or externally linked workbooks are not accepted.");
+  }
+  return archiveEntries;
+}
+
+function readArchiveEntry(bytes: Buffer, entry: ArchiveEntry): Buffer {
+  const headerOffset = entry.localHeaderOffset;
+  if (headerOffset + 30 > bytes.byteLength || bytes.readUInt32LE(headerOffset) !== 0x04034b50) {
+    throw importError("INVALID_XLSX", "Workbook ZIP local entry is corrupt.");
+  }
+  const filenameLength = bytes.readUInt16LE(headerOffset + 26);
+  const extraLength = bytes.readUInt16LE(headerOffset + 28);
+  const dataStart = headerOffset + 30 + filenameLength + extraLength;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (dataEnd > bytes.byteLength) throw importError("INVALID_XLSX", "Workbook ZIP entry data is corrupt.");
+
+  let content: Buffer;
+  try {
+    if (entry.compressionMethod === 0) content = bytes.subarray(dataStart, dataEnd);
+    else if (entry.compressionMethod === 8) content = Buffer.from(inflateRawSync(bytes.subarray(dataStart, dataEnd)));
+    else throw new Error("Unsupported ZIP compression method.");
+  } catch {
+    throw importError("INVALID_XLSX", "Workbook ZIP entry cannot be safely read.");
+  }
+  if (content.byteLength !== entry.uncompressedSize) {
+    throw importError("INVALID_XLSX", "Workbook ZIP entry size is inconsistent.");
+  }
+  return content;
+}
+
+function assertNoExternalRelationships(bytes: Buffer, entries: ArchiveEntry[]): void {
+  for (const entry of entries) {
+    if (!entry.name.startsWith("xl/") || !entry.name.endsWith(".rels")) continue;
+    const relationshipXml = readArchiveEntry(bytes, entry).toString("utf8");
+    if (/\bTargetMode\s*=\s*["']External["']/i.test(relationshipXml)) {
+      throw importError("UNSAFE_XLSX", "Workbook external relationships are not accepted.");
+    }
+  }
+}
+
+function assertWorkbookCellPolicy(workbook: ExcelJS.Workbook): void {
+  for (const sheet of workbook.worksheets) {
+    sheet.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const value = cell.value;
+        if (cell.type === ExcelJS.ValueType.Formula || (typeof value === "object" && value !== null && "formula" in value)) {
+          throw importError("UNSAFE_XLSX", "Workbook formulas are not accepted anywhere in the template.");
+        }
+        if (typeof value === "object" && value !== null && "hyperlink" in value && typeof value.hyperlink === "string" && !value.hyperlink.startsWith("#")) {
+          throw importError("UNSAFE_XLSX", "Workbook external hyperlinks are not accepted.");
+        }
+      });
+    });
   }
 }
 
@@ -241,7 +307,8 @@ function rowFromWorksheet(row: ExcelJS.Row, rowNumber: number, issues: ImportIss
 }
 
 export async function parseMasterDataWorkbook(bytes: Buffer): Promise<ImportPreviewPayload> {
-  inspectXlsxArchive(bytes);
+  const archiveEntries = inspectXlsxArchive(bytes);
+  assertNoExternalRelationships(bytes, archiveEntries);
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(toExcelJsBuffer(bytes));
@@ -253,6 +320,7 @@ export async function parseMasterDataWorkbook(bytes: Buffer): Promise<ImportPrev
   if (!workbook.worksheets.length || workbook.worksheets.some((sheet) => !allowedSheets.has(sheet.name))) {
     throw importError("INVALID_IMPORT_SHEET", `Workbook may contain only the '${MASTER_DATA_SHEET}' sheet and optional '${MASTER_DATA_INSTRUCTIONS_SHEET}' sheet.`);
   }
+  assertWorkbookCellPolicy(workbook);
   const sheet = workbook.getWorksheet(MASTER_DATA_SHEET);
   if (!sheet) throw importError("INVALID_IMPORT_SHEET", `Workbook must contain a '${MASTER_DATA_SHEET}' sheet.`);
   assertExpectedHeaders(sheet);
@@ -331,8 +399,6 @@ export async function createMasterDataTemplate(): Promise<Buffer> {
     { type: "TEACHER", identifier: "SYN-TCH-001", fullName: "Guru Sintetis Satu", barcode: "CARD-SYN-002", className: "", grade: "", schoolYear: "", department: "Akademik", position: "Guru Matematika", email: "guru.sintetis@example.test", phone: "628000000001" },
     { type: "EMPLOYEE", identifier: "SYN-EMP-001", fullName: "Pegawai Sintetis Satu", barcode: "CARD-SYN-003", className: "", grade: "", schoolYear: "", department: "Operasional", position: "Staf Koperasi", email: "pegawai.sintetis@example.test", phone: "628000000002" },
   ];
-  examples.forEach((example) => sheet.addRow(masterDataColumns.map((column) => templateValue(example[column]))));
-
   const instructions = workbook.addWorksheet(MASTER_DATA_INSTRUCTIONS_SHEET);
   instructions.getColumn(1).width = 32;
   instructions.getColumn(2).width = 100;
@@ -347,6 +413,11 @@ export async function createMasterDataTemplate(): Promise<Buffer> {
     ["Proses", "Unggah untuk preview, perbaiki semua error, lalu konfirmasi commit. Preview tidak menulis data."],
   ].forEach((row) => instructions.addRow(row));
   instructions.getRow(1).font = { bold: true };
+  instructions.addRow([]);
+  instructions.addRow(["Contoh sintetis", "Contoh ini berada di sheet Instructions dan tidak dapat diimpor langsung."]);
+  const exampleHeader = instructions.addRow([...masterDataColumns]);
+  exampleHeader.font = { bold: true };
+  examples.forEach((example) => instructions.addRow(masterDataColumns.map((column) => templateValue(example[column]))));
 
   const output = await workbook.xlsx.writeBuffer();
   return Buffer.from(output);

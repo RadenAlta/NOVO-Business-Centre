@@ -150,6 +150,11 @@ const masterDataImportCommitInput = z.object({
   previewId: id,
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
+const memberEligibleIdentityQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+}).strict();
 type MasterDataType = z.infer<typeof masterDataType>;
 type MasterDataCreateInput = z.infer<typeof masterDataCreateInput>;
 type MasterDataPatchInput = z.infer<typeof masterDataPatchInput>;
@@ -219,6 +224,21 @@ api.get("/master-data", requireRoles(...adminRoles), asyncRoute(async (request, 
   response.json({ data: records, pagination: { page: query.page, pageSize: query.pageSize, total, pageCount: Math.ceil(total / query.pageSize) } });
 }));
 
+api.get("/master-data/member-eligible", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
+  const query = memberEligibleIdentityQuery.parse(request.query);
+  const where = {
+    tenantId: me(request).tenantId,
+    active: true,
+    type: { in: ["TEACHER", "EMPLOYEE"] as MasterDataType[] },
+    ...(query.q ? { OR: [{ fullName: { contains: query.q, mode: "insensitive" as const } }, { identifier: { contains: query.q, mode: "insensitive" as const } }, { department: { contains: query.q, mode: "insensitive" as const } }, { position: { contains: query.q, mode: "insensitive" as const } }] } : {}),
+  };
+  const [total, records] = await prisma.$transaction([
+    prisma.masterDataRecord.count({ where }),
+    prisma.masterDataRecord.findMany({ where, select: { id: true, type: true, identifier: true, fullName: true, department: true, position: true, active: true }, orderBy: [{ fullName: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+  ]);
+  response.json({ data: records, pagination: { page: query.page, pageSize: query.pageSize, total, pageCount: Math.ceil(total / query.pageSize) } });
+}));
+
 api.post("/master-data", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const input = masterDataCreateInput.parse(request.body);
   const data = normalizeMasterDataFields(input, input.type);
@@ -242,8 +262,10 @@ api.patch("/master-data/:id", requireRoles(...adminRoles), asyncRoute(async (req
 api.patch("/master-data/:id/active", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const recordId = id.parse(request.params.id);
   const input = z.object({ active: z.boolean() }).strict().parse(request.body);
-  const updated = await prisma.masterDataRecord.updateMany({ where: { id: recordId, tenantId: me(request).tenantId }, data: input });
-  if (!updated.count) throw new HttpError(404, "NOT_FOUND", "Master data record not found.");
+  const existing = await prisma.masterDataRecord.findFirst({ where: { id: recordId, tenantId: me(request).tenantId } });
+  if (!existing) throw new HttpError(404, "NOT_FOUND", "Master data record not found.");
+  if (existing.dataSource === "SIMS") throw new HttpError(409, "SIMS_MANAGED_RECORD", "SIMS-managed activation status cannot be changed manually.");
+  await prisma.masterDataRecord.update({ where: { id: existing.id }, data: input });
   await audit(me(request), input.active ? "activate" : "deactivate", "MasterDataRecord", recordId, input);
   response.status(204).end();
 }));
@@ -325,28 +347,35 @@ api.get("/members", requireRoles(...memberReadRoles), asyncRoute(async (request,
 
 api.post("/members", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const input = memberInput.parse(request.body);
-  const identity = await prisma.masterDataRecord.findFirst({ where: { id: input.identityId, tenantId: me(request).tenantId }, select: { id: true, type: true, active: true, fullName: true, email: true, phone: true } });
-  if (!identity || identity.type === "STUDENT" || !identity.active) {
-    throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity from this tenant may become a cooperative member.");
-  }
-  const member = await prisma.cooperativeMember.create({ data: { tenantId: me(request).tenantId, identityId: identity.id, memberNo: normalizeIdentifier(input.memberNo), name: identity.fullName, email: identity.email, phone: identity.phone } });
-  await audit(me(request), "create", "CooperativeMember", member.id, { memberNo: member.memberNo, identityId: member.identityId, active: member.active });
+  const actor = me(request);
+  const member = await prisma.$transaction(async (tx) => {
+    const identity = await tx.masterDataRecord.findFirst({ where: { id: input.identityId, tenantId: actor.tenantId }, select: { id: true, type: true, active: true, fullName: true, email: true, phone: true } });
+    if (!identity || identity.type === "STUDENT" || !identity.active) {
+      throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity from this tenant may become a cooperative member.");
+    }
+    const created = await tx.cooperativeMember.create({ data: { tenantId: actor.tenantId, identityId: identity.id, memberNo: normalizeIdentifier(input.memberNo), name: identity.fullName, email: identity.email, phone: identity.phone } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "CooperativeMember", entityId: created.id, after: { memberNo: created.memberNo, identityId: created.identityId, active: created.active } as unknown as Prisma.InputJsonValue } });
+    return created;
+  });
   response.status(201).json(member);
 }));
 
 api.patch("/members/:id/active", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const memberId = id.parse(request.params.id);
   const input = z.object({ active: z.boolean() }).strict().parse(request.body);
-  const member = await prisma.cooperativeMember.findFirst({
-    where: { id: memberId, tenantId: me(request).tenantId },
-    include: { identity: { select: { id: true, type: true, active: true } } },
+  const actor = me(request);
+  await prisma.$transaction(async (tx) => {
+    const member = await tx.cooperativeMember.findFirst({
+      where: { id: memberId, tenantId: actor.tenantId },
+      include: { identity: { select: { id: true, type: true, active: true } } },
+    });
+    if (!member) throw new HttpError(404, "NOT_FOUND", "Cooperative member not found.");
+    if (input.active && (!member.identity || !member.identity.active || member.identity.type === "STUDENT")) {
+      throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity may have an active cooperative membership.");
+    }
+    await tx.cooperativeMember.update({ where: { id: member.id }, data: input });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: input.active ? "activate" : "deactivate", entityType: "CooperativeMember", entityId: member.id, after: { memberNo: member.memberNo, identityId: member.identityId, active: input.active } as unknown as Prisma.InputJsonValue } });
   });
-  if (!member) throw new HttpError(404, "NOT_FOUND", "Cooperative member not found.");
-  if (input.active && (!member.identity || !member.identity.active || member.identity.type === "STUDENT")) {
-    throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity may have an active cooperative membership.");
-  }
-  await prisma.cooperativeMember.update({ where: { id: member.id }, data: input });
-  await audit(me(request), input.active ? "activate" : "deactivate", "CooperativeMember", member.id, { memberNo: member.memberNo, identityId: member.identityId, active: input.active });
   response.status(204).end();
 }));
 api.get("/products", asyncRoute(async (request, response) => {

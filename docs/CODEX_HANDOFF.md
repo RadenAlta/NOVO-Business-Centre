@@ -1,54 +1,39 @@
-# CODEX Handoff — Sprint 03 final acceptance audit
+# CODEX Handoff — Sprint 03 code-review corrections
 
 ## Git state
 
 - Repository: `RadenAlta/NOVO-Business-Centre` (private).
 - Branch: `codex/sprint-03-master-data-import`; base `main`: `671f049`.
-- Current checkpoint and remote branch head: `16824cc`.
-- Owner-reported GitHub Actions run `40301187864` for `16824cc`: SUCCESS for API/Web, ML, Prisma migration deploy, build, test, and lint.
-- Local GitHub API verification was attempted on 26 October 2026 and was unavailable because `api.github.com` could not be reached. This does not contradict the owner-provided result.
+- Reviewed head: `e636a6d`; existing PR: #3.
+- This correction set has not been committed or pushed from this environment because Git cannot create `.git/index.lock`.
 
-## Final acceptance result
+## Review-correction matrix
 
-| Item | Result | Evidence |
-| --- | --- | --- |
-| HIGH-01: partial Excel rows | CLOSED | `safeRequired` reports missing `identifier` and `fullName` with workbook row numbers; API unit regression is 4/4. Empty rows remain ignored. |
-| HIGH-02: membership state change | CLOSED | `PATCH /members/:id/active` requires admin, session CSRF, same tenant, and an active teacher or employee before reactivation. It writes an audit event. PostgreSQL integration cases cover deactivate/reactivate, inactive identity, and foreign tenant rejection. |
-| FR-003 | partial | Tenant-scoped CRUD, filtering, pagination, normalized unique identifiers, RBAC and cross-tenant tests exist. |
-| FR-004 | partial | Exact XLSX template contract, archive guards, preview, expiry, actor and tenant binding, one-use serializable commit, replay and concurrency tests exist. |
-| FR-005 | partial | Active same-tenant teacher or employee eligibility, student and inactive rejection, duplicate links, lifecycle status, downstream guard and audit exist. |
+| Finding | Code correction | Regression evidence | Current status |
+| --- | --- | --- | --- |
+| HIGH-03 picker truncation | Added server-side `GET /master-data/member-eligible` restricted to active `TEACHER`/`EMPLOYEE`, tenant-scoped, searchable and paginated. Web picker uses this endpoint with candidate search and paging. | PostgreSQL integration creates 150 students and proves the teacher still appears in the eligible result. | pending hosted CI |
+| HIGH-04 incomplete XLSX policy | Archive relationships with `TargetMode=External`, external hyperlinks and formulas anywhere in allowed sheets are rejected. | API unit cases reject hyperlink relationship, formula on Instructions, and accidental template import. | pending hosted CI |
+| HIGH-05 non-atomic membership audit | Membership create and active-state transition now use a single Prisma transaction with their audit insertion. | PostgreSQL test installs a temporary audit-failure trigger and proves both create and deactivate roll back. | pending hosted CI |
+| MED-01 retention | Kept as mandatory pre-production work: raw XLSX is not stored, while expired parsed preview rows need scheduled retention cleanup. | Threat model and defect register. | OPEN |
+| MED-02 demo identities | Examples moved to `Instructions`; the importable sheet contains only headers. | Unit and integration template-upload regression. | pending hosted CI |
+| MED-03 SIMS active state | Manual activation/deactivation of `dataSource=SIMS` is rejected consistently with SIMS ownership policy. | PostgreSQL integration negative case. | pending hosted CI |
 
-No FR, NFR, Main Quest, or Side Quest row is promoted to `verified` by this audit. Passing CI exercises its covered cases; it is not a complete browser E2E, deployment, production security, or program-completion claim.
+## FR-003 delete decision
+
+The Sprint 03 delete acceptance is fulfilled by **soft deactivation**, not a destructive delete. This preserves cooperative, finance, shuttle, audit and historical references. The UI and API expose explicit activate/deactivate operations; hard deletion is intentionally outside the Sprint 03 policy.
 
 ## Validation record
 
 | Check | Status | Observed result |
 | --- | --- | --- |
-| `pnpm --filter @novo/api exec vitest run src/master-data-import.test.ts` | PASS | 4 tests: normalization, normalized duplicate, partial required fields, exact-header rejection. |
-| `pnpm build` | PASS | Contracts, API TypeScript, and Vite production build completed. |
-| `pnpm lint` | PASS | Contracts, API, and Web TypeScript lint completed. |
-| `pnpm db:generate` | PASS | Prisma Client 6.19.3 generated from the committed schema. |
-| `prisma validate` with a disposable-shaped URL | PASS | The committed PostgreSQL schema validates. |
-| Local `pnpm test` | BLOCKED for integration only | Contracts 3/3, Web 13/13, API unit 6/6 passed. The security integration suite correctly refuses to start without `NODE_ENV=test` and disposable `novo_ci` or `novo_test` PostgreSQL. |
-| Local Docker/PostgreSQL integration rerun | BLOCKED | Docker is not installed in this workspace. Hosted CI is the supplied PostgreSQL execution evidence. |
-| Hosted CI `40301187864` | PASS, owner-reported | API/Web and ML jobs including migration deploy, build, test, and lint succeeded for `16824cc`. |
+| API Master Data unit test | PASS | 7/7, including external hyperlink relationship, Instructions formula, and template-without-demo-import regression cases. |
+| `pnpm build` | PASS | Contracts, API TypeScript, and Vite production build. |
+| `pnpm lint` | PASS | Contracts, API, and Web TypeScript lint. |
+| `pnpm db:generate` and `prisma validate` | PASS | Generated Prisma Client and valid committed PostgreSQL schema. |
+| Local `pnpm test` | BLOCKED for integration only | Contracts 3/3, Web 13/13, API unit 9/9 pass. `security.integration.test.ts` intentionally rejects non-disposable/no-PostgreSQL execution. |
+| Local PostgreSQL integration | BLOCKED | Docker executable and disposable database are unavailable. |
+| GitHub Actions | pending | Must run against the eventual correction commit; no success claim is made for unpushed changes. |
 
-## Open non-blocking risk
+## Recommendation
 
-- MED-01 — Expired preview authorization is enforced, and no raw XLSX bytes are persisted. Parsed preview rows are only lazily purged on a later preview by the same actor and tenant. Add an authenticated or scheduled retention purge before production handling of real personal data. This does not permit expired, foreign, altered, or replayed commits.
-
-## Decision
-
-READY for Draft PR #3 review. Do not merge automatically and do not begin Sprint 04. The remaining items are roadmap and deployment/retention work, not blockers for the Sprint 03 code review.
-
-## If local Git write is blocked
-
-```powershell
-Set-Location C:\Users\raden\dev\projects\NOVO-Business-Centre
-git status --short
-git diff --check
-git add -- docs/CODEX_HANDOFF.md docs/IMPLEMENTATION_STATUS.md docs/NOVO-PRD-COVERAGE.md docs/QUEST-TRACEABILITY.md docs/SPRINT03_THREAT_MODEL.md
-git diff --cached --check
-git commit -m "docs: finalize Sprint 03 acceptance audit"
-git push origin codex/sprint-03-master-data-import
-```
+**REQUEST CHANGES** until the correction commit is pushed and PR #3 GitHub Actions completes PostgreSQL migration and security integration tests successfully. Do not merge or start Sprint 04 yet.

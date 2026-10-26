@@ -70,6 +70,18 @@ async function createTenantUser(account: TestAccount, emailPrefix: string, role:
   return { tenantId: account.tenantId, slug: account.slug, userId: user.id, email, password };
 }
 
+async function withFailingCooperativeMemberAudit(action: "create" | "deactivate", callback: () => Promise<void>): Promise<void> {
+  await prisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION novo_fail_cooperative_member_audit() RETURNS trigger AS $ BEGIN IF NEW."entityType" = 'CooperativeMember' AND NEW.action = '${action}' THEN RAISE EXCEPTION 'forced cooperative-member audit failure'; END IF; RETURN NEW; END; $ LANGUAGE plpgsql;`);
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_cooperative_member_audit_trigger ON "AuditLog";');
+  await prisma.$executeRawUnsafe('CREATE TRIGGER novo_fail_cooperative_member_audit_trigger BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION novo_fail_cooperative_member_audit();');
+  try {
+    await callback();
+  } finally {
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_cooperative_member_audit_trigger ON "AuditLog";');
+    await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS novo_fail_cooperative_member_audit();');
+  }
+}
+
 beforeEach(async () => {
   await mkdir(path.resolve(env.UPLOAD_DIR), { recursive: true });
   await clearTestData();
@@ -221,11 +233,23 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     const teacher = await create({ type: "TEACHER", identifier: "TCH-001", fullName: "Guru Sintetis", department: "Akademik", position: "Guru" }).expect(201);
     await create({ type: "EMPLOYEE", identifier: "EMP-001", fullName: "Pegawai Sintetis", department: "Operasional", position: "Kasir" }).expect(201);
     await create({ type: "STUDENT", identifier: "STU-001", fullName: "Duplikat Sintetis" }).expect(409);
+    await prisma.masterDataRecord.createMany({ data: Array.from({ length: 150 }, (_, index) => ({ tenantId: account.tenantId, type: "STUDENT" as const, identifier: `BATCH-STU-${String(index + 1).padStart(3, "0")}`, fullName: `Batch ${index + 1}`, dataSource: "TEST" })) });
+    const eligibleIdentityPage = await agent.get("/api/v1/master-data/member-eligible?page=1&pageSize=1").expect(200);
+    const eligibleIdentityNextPage = await agent.get("/api/v1/master-data/member-eligible?page=2&pageSize=1").expect(200);
+    const eligibleIdentitySearch = await agent.get("/api/v1/master-data/member-eligible?q=Guru&page=1&pageSize=10").expect(200);
+    expect(eligibleIdentityPage.body.pagination).toMatchObject({ page: 1, pageSize: 1, total: 2, pageCount: 2 });
+    expect(eligibleIdentityNextPage.body.pagination).toMatchObject({ page: 2, pageSize: 1, total: 2, pageCount: 2 });
+    expect([...eligibleIdentityPage.body.data, ...eligibleIdentityNextPage.body.data]).toEqual(expect.arrayContaining([expect.objectContaining({ id: teacher.body.id, type: "TEACHER", active: true })]));
+    expect(eligibleIdentitySearch.body).toMatchObject({ data: [expect.objectContaining({ id: teacher.body.id })], pagination: { total: 1 } });
+    expect(eligibleIdentityPage.body.data.every((identity: { type: string; active: boolean }) => identity.active && (identity.type === "TEACHER" || identity.type === "EMPLOYEE"))).toBe(true);
 
     const page = await agent.get("/api/v1/master-data?type=STUDENT&q=Siswa&page=1&pageSize=1").expect(200);
     expect(page.body.pagination).toMatchObject({ page: 1, pageSize: 1, total: 1, pageCount: 1 });
     expect(page.body.data[0]).toMatchObject({ id: student.body.id, className: "7-A" });
     await agent.patch(`/api/v1/master-data/${student.body.id}`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ fullName: "Siswa Sintetis Diperbarui", schoolYear: "2027/2028" }).expect(200);
+    const simsManaged = await prisma.masterDataRecord.create({ data: { tenantId: account.tenantId, type: "EMPLOYEE", identifier: "SIMS-ACTIVE-001", fullName: "SIMS Status", dataSource: "SIMS" } });
+    await agent.patch(`/api/v1/master-data/${simsManaged.id}/active`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ active: false }).expect(409);
+    expect((await prisma.masterDataRecord.findUniqueOrThrow({ where: { id: simsManaged.id } })).active).toBe(true);
     const otherMe = await otherAgent.get("/api/v1/me").expect(200);
     await otherAgent.patch(`/api/v1/master-data/${student.body.id}`).set("Origin", origin).set("X-Novo-Csrf", otherMe.body.csrfToken as string).send({ fullName: "Tenant lain" }).expect(404);
     await viewerAgent.get("/api/v1/master-data").expect(403);
@@ -243,6 +267,25 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     await agent.post("/api/v1/funding/accounts").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ memberId: member.body.id }).expect(400);
     const audits = await agent.get("/api/v1/audit-logs").expect(200);
     expect(audits.body.data.some((entry: { entityType: string }) => entry.entityType === "CooperativeMember")).toBe(true);
+  });
+
+  it("rolls back membership creation and status changes when audit recording fails", async () => {
+    const account = await createAccount("membership-audit");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrfToken = signedIn.body.csrfToken as string;
+    const teacher = await agent.post("/api/v1/master-data").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ type: "TEACHER", identifier: "AUDIT-TCH-001", fullName: "Guru Audit", department: "Akademik", position: "Guru" }).expect(201);
+
+    await withFailingCooperativeMemberAudit("create", async () => {
+      await agent.post("/api/v1/members").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ identityId: teacher.body.id, memberNo: "AUDIT-MEMBER-001" }).expect(500);
+    });
+    expect(await prisma.cooperativeMember.count({ where: { tenantId: account.tenantId } })).toBe(0);
+
+    const member = await agent.post("/api/v1/members").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ identityId: teacher.body.id, memberNo: "AUDIT-MEMBER-001" }).expect(201);
+    await withFailingCooperativeMemberAudit("deactivate", async () => {
+      await agent.patch(`/api/v1/members/${member.body.id}/active`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ active: false }).expect(500);
+    });
+    expect((await prisma.cooperativeMember.findUniqueOrThrow({ where: { id: member.body.id } })).active).toBe(true);
   });
 
   it("downloads a template, previews without writes, commits exactly once, and rejects unsafe workbooks", async () => {
@@ -264,6 +307,7 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     const templateWorkbook = new ExcelJS.Workbook();
     await templateWorkbook.xlsx.load(toExcelJsBuffer(template.body));
     expect(templateWorkbook.getWorksheet("Master Data")?.getRow(1).values).toContain("identifier");
+    await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", template.body, { filename: "template.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(400);
 
     const buffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: "IMP-001", fullName: "Pegawai Import Sintetis", department: "Operasional", position: "Staf Koperasi" }]);
     const preview = await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", buffer, { filename: "master-data.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(201);
@@ -305,9 +349,7 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     expect(await prisma.masterDataRecord.count({ where: { tenantId: account.tenantId, type: "EMPLOYEE", identifier: "CONCURRENT-001" } })).toBe(1);
 
     const formulaBuffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: { formula: "1+1" }, fullName: "Formula Sintetis", department: "Operasional", position: "Staf" }]);
-    const formulaPreview = await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", formulaBuffer, { filename: "formula.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(201);
-    expect(formulaPreview.body.summary.error).toBeGreaterThan(0);
-    await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: formulaPreview.body.previewId, fingerprint: formulaPreview.body.fingerprint }).expect(422);
+    await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", formulaBuffer, { filename: "formula.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(400);
     await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", Buffer.from("not a workbook"), { filename: "bad.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(400);
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: simsPreview.body.previewId, fingerprint: "0".repeat(64) }).expect(409);
   });
