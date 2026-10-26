@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 
 import ExcelJS from "exceljs";
+import { SaxesParser } from "saxes";
 import { z } from "zod";
 
 import { HttpError } from "./lib.js";
@@ -12,6 +13,9 @@ export const MASTER_DATA_INSTRUCTIONS_SHEET = "Instructions";
 export const MAX_IMPORT_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_IMPORT_ROWS = 500;
 export const IMPORT_PREVIEW_TTL_MS = 10 * 60 * 1000;
+export const MAX_ARCHIVE_EXPANDED_BYTES = 10 * 1024 * 1024;
+const MAX_RELATIONSHIP_XML_BYTES = 128 * 1024;
+const MAX_RELATIONSHIP_COUNT = 100;
 
 const identityTypes = ["STUDENT", "TEACHER", "EMPLOYEE"] as const;
 type IdentityType = (typeof identityTypes)[number];
@@ -197,7 +201,7 @@ function inspectXlsxArchive(bytes: Buffer): ArchiveEntry[] {
       throw importError("INVALID_XLSX", "Workbook contains an unsafe archive path.");
     }
     totalUncompressed += uncompressedSize;
-    if (totalUncompressed > 10 * 1024 * 1024 || (compressedSize > 0 && uncompressedSize / compressedSize > 100)) {
+    if (totalUncompressed > MAX_ARCHIVE_EXPANDED_BYTES || (compressedSize > 0 && uncompressedSize / compressedSize > 100)) {
       throw importError("IMPORT_ARCHIVE_TOO_LARGE", "Workbook expands beyond the safe import limit.");
     }
     const normalizedName = name.toLowerCase();
@@ -212,7 +216,7 @@ function inspectXlsxArchive(bytes: Buffer): ArchiveEntry[] {
   return archiveEntries;
 }
 
-function readArchiveEntry(bytes: Buffer, entry: ArchiveEntry): Buffer {
+function readArchiveEntry(bytes: Buffer, entry: ArchiveEntry, maximumOutputBytes: number): Buffer {
   const headerOffset = entry.localHeaderOffset;
   if (headerOffset + 30 > bytes.byteLength || bytes.readUInt32LE(headerOffset) !== 0x04034b50) {
     throw importError("INVALID_XLSX", "Workbook ZIP local entry is corrupt.");
@@ -222,14 +226,24 @@ function readArchiveEntry(bytes: Buffer, entry: ArchiveEntry): Buffer {
   const dataStart = headerOffset + 30 + filenameLength + extraLength;
   const dataEnd = dataStart + entry.compressedSize;
   if (dataEnd > bytes.byteLength) throw importError("INVALID_XLSX", "Workbook ZIP entry data is corrupt.");
+  if (entry.uncompressedSize > maximumOutputBytes) {
+    throw importError("IMPORT_ARCHIVE_TOO_LARGE", "Workbook expands beyond the safe import limit.");
+  }
 
   let content: Buffer;
   try {
     if (entry.compressionMethod === 0) content = bytes.subarray(dataStart, dataEnd);
-    else if (entry.compressionMethod === 8) content = Buffer.from(inflateRawSync(bytes.subarray(dataStart, dataEnd)));
+    else if (entry.compressionMethod === 8) content = Buffer.from(inflateRawSync(bytes.subarray(dataStart, dataEnd), { maxOutputLength: maximumOutputBytes }));
     else throw new Error("Unsupported ZIP compression method.");
-  } catch {
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+    if (code === "ERR_BUFFER_TOO_LARGE") {
+      throw importError("IMPORT_ARCHIVE_TOO_LARGE", "Workbook expands beyond the safe import limit.");
+    }
     throw importError("INVALID_XLSX", "Workbook ZIP entry cannot be safely read.");
+  }
+  if (content.byteLength > maximumOutputBytes) {
+    throw importError("IMPORT_ARCHIVE_TOO_LARGE", "Workbook expands beyond the safe import limit.");
   }
   if (content.byteLength !== entry.uncompressedSize) {
     throw importError("INVALID_XLSX", "Workbook ZIP entry size is inconsistent.");
@@ -237,11 +251,57 @@ function readArchiveEntry(bytes: Buffer, entry: ArchiveEntry): Buffer {
   return content;
 }
 
-function assertNoExternalRelationships(bytes: Buffer, entries: ArchiveEntry[]): void {
+function validateArchiveContents(bytes: Buffer, entries: ArchiveEntry[]): ReadonlyMap<string, Buffer> {
+  let totalActualBytes = 0;
+  const relationshipFiles = new Map<string, Buffer>();
   for (const entry of entries) {
-    if (!entry.name.startsWith("xl/") || !entry.name.endsWith(".rels")) continue;
-    const relationshipXml = readArchiveEntry(bytes, entry).toString("utf8");
-    if (/\bTargetMode\s*=\s*["']External["']/i.test(relationshipXml)) {
+    const remainingBytes = MAX_ARCHIVE_EXPANDED_BYTES - totalActualBytes;
+    const content = readArchiveEntry(bytes, entry, Math.max(1, remainingBytes));
+    totalActualBytes += content.byteLength;
+    if (totalActualBytes > MAX_ARCHIVE_EXPANDED_BYTES) {
+      throw importError("IMPORT_ARCHIVE_TOO_LARGE", "Workbook expands beyond the safe import limit.");
+    }
+    if (entry.name.endsWith(".rels")) relationshipFiles.set(entry.name, content);
+  }
+  return relationshipFiles;
+}
+
+export function assertNoExternalRelationships(relationshipFiles: ReadonlyMap<string, Buffer>): void {
+  for (const [name, relationshipXml] of relationshipFiles) {
+    if (relationshipXml.byteLength > MAX_RELATIONSHIP_XML_BYTES) {
+      throw importError("IMPORT_ARCHIVE_TOO_LARGE", `Relationship XML '${name}' exceeds the safe size limit.`);
+    }
+
+    let relationshipCount = 0;
+    let externalRelationship = false;
+    const parser = new SaxesParser({ xmlns: false });
+    parser.on("doctype", () => {
+      throw new Error("DOCTYPE declarations are not allowed.");
+    });
+    parser.on("error", (error) => {
+      throw error;
+    });
+    parser.on("opentag", (tag) => {
+      if (tag.name !== "Relationships" && tag.name !== "Relationship") {
+        throw new Error("Unexpected relationship XML element.");
+      }
+      if (tag.name !== "Relationship") return;
+      relationshipCount += 1;
+      if (relationshipCount > MAX_RELATIONSHIP_COUNT) {
+        throw new Error("Too many relationship entries.");
+      }
+      const targetMode = tag.attributes.TargetMode;
+      if (typeof targetMode === "string" && targetMode.trim().toLowerCase() === "external") {
+        externalRelationship = true;
+      }
+    });
+
+    try {
+      parser.write(relationshipXml.toString("utf8")).close();
+    } catch {
+      throw importError("INVALID_XLSX", "Workbook relationship XML is invalid or unsafe.");
+    }
+    if (externalRelationship) {
       throw importError("UNSAFE_XLSX", "Workbook external relationships are not accepted.");
     }
   }
@@ -308,7 +368,8 @@ function rowFromWorksheet(row: ExcelJS.Row, rowNumber: number, issues: ImportIss
 
 export async function parseMasterDataWorkbook(bytes: Buffer): Promise<ImportPreviewPayload> {
   const archiveEntries = inspectXlsxArchive(bytes);
-  assertNoExternalRelationships(bytes, archiveEntries);
+  const relationshipFiles = validateArchiveContents(bytes, archiveEntries);
+  assertNoExternalRelationships(relationshipFiles);
   const workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(toExcelJsBuffer(bytes));

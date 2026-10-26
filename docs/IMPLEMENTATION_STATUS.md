@@ -1,8 +1,8 @@
 # Sprint 03 — Master Data, Excel Import & Membership Status
 
-**Audit date:** 26 October 2026
+**Audit date:** 27 October 2026
 **Branch:** `codex/sprint-03-master-data-import`
-**Audit boundary:** final source audit at branch head `16824cc` against `main` `671f049`, local validation on 26 October 2026, and owner-reported successful GitHub Actions run `40301187864`. The hosted API/Web job uses disposable PostgreSQL, applies committed migrations, then runs build, all workspace tests, and lint. This is not full browser E2E, production deployment, or security certification.
+**Audit boundary:** Sprint 03 baseline `28fa14a` against `main` `671f049`, owner-reported PR #3 CI 4/4 pass for that baseline, and the uncommitted HIGH-06/HIGH-07 hardening audited locally on 27 October 2026. The hosted API/Web job uses disposable PostgreSQL, applies committed migrations, then runs build, all workspace tests, and lint. The new hardening still requires its own hosted run; this is not full browser E2E, production deployment, or security certification.
 
 ## Status convention
 
@@ -23,7 +23,7 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | FR-001 | Authentication | Login/logout dan session persisten | partial | Hosted PostgreSQL security tests passed in CI for opaque 256-bit HttpOnly cookie, stable CSRF, session hashing, expiry/revocation and replay; browser E2E and production configuration remain unverified. |
 | FR-002 | RBAC | Validasi role/permission & business-unit scope di server | partial | Hosted PostgreSQL tests passed current-role, inactive-account and cross-tenant negative cases; full business-unit permission matrix and production threat review remain unverified. |
 | FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Tenant-scoped CRUD/status/search/filter/pagination plus identifier normalization and SIMS protection are implemented. Hosted CI covered its PostgreSQL security scenarios; browser E2E remains unverified. |
-| FR-004 | Master Data Excel | Download template + impor Excel | partial | Exact XLSX template, ZIP/formula safeguards, actor/tenant-bound expiry, serializable one-use commit and concurrency tests are implemented. Raw XLSX bytes are not persisted; structured-preview cleanup remains a documented follow-up. |
+| FR-004 | Master Data Excel | Download template + impor Excel | partial | Exact XLSX template, bounded ZIP expansion/relationship policy, formula safeguards, actor/tenant-bound expiry, serializable one-use commit and concurrency tests are implemented. HIGH-06/HIGH-07 have local parser tests but require hosted CI for this working set. Raw XLSX bytes are not persisted; scheduled structured-preview cleanup remains MED-01 OPEN. |
 | FR-005 | Membership | Cooperative membership & eligibility | partial | Creation and reactivation require an active same-tenant teacher or employee; students, inactive/foreign identities and duplicates are denied. Status changes are admin-only, CSRF-protected and audited. Legacy unlinked members remain historical but ineligible. |
 | FR-006 | SO Store | POS, inventory, payment, receipt, history, stock movement | partial | Static audit: `app.ts` product, stock-adjustment and transactional `/sales` routes plus Store screen exist; no POS integration test. |
 | FR-007 | SO Shuttle | Subscription, billing, payment, settlement, reporting | partial | Static audit: `app.ts` shuttle route, subscription, invoice and payment routes exist; no billing/settlement integration test. |

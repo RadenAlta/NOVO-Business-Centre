@@ -1,39 +1,41 @@
-# CODEX Handoff — Sprint 03 code-review corrections
+# CODEX Handoff — Sprint 03 PR #3 final XLSX hardening
 
 ## Git state
 
 - Repository: `RadenAlta/NOVO-Business-Centre` (private).
-- Branch: `codex/sprint-03-master-data-import`; base `main`: `671f049`.
-- Reviewed head: `e636a6d`; existing PR: #3.
-- This correction set has not been committed or pushed from this environment because Git cannot create `.git/index.lock`.
+- Branch: `codex/sprint-03-master-data-import`; base `main`: `671f049`; existing PR: #3.
+- Latest pushed baseline: `28fa14a`, with PR #3 GitHub Actions reported **4/4 PASS** by the review request.
+- Current tree changes HIGH-06 and HIGH-07 only. They are not committed or pushed from this environment because Git cannot create `.git/index.lock`.
 
-## Review-correction matrix
+## Sprint 03 review and hardening state
 
-| Finding | Code correction | Regression evidence | Current status |
-| --- | --- | --- | --- |
-| HIGH-03 picker truncation | Added server-side `GET /master-data/member-eligible` restricted to active `TEACHER`/`EMPLOYEE`, tenant-scoped, searchable and paginated. Web picker uses this endpoint with candidate search and paging. | PostgreSQL integration creates 150 students and proves the teacher still appears in the eligible result. | pending hosted CI |
-| HIGH-04 incomplete XLSX policy | Archive relationships with `TargetMode=External`, external hyperlinks and formulas anywhere in allowed sheets are rejected. | API unit cases reject hyperlink relationship, formula on Instructions, and accidental template import. | pending hosted CI |
-| HIGH-05 non-atomic membership audit | Membership create and active-state transition now use a single Prisma transaction with their audit insertion. | PostgreSQL test installs a temporary audit-failure trigger and proves both create and deactivate roll back. | pending hosted CI |
-| MED-01 retention | Kept as mandatory pre-production work: raw XLSX is not stored, while expired parsed preview rows need scheduled retention cleanup. | Threat model and defect register. | OPEN |
-| MED-02 demo identities | Examples moved to `Instructions`; the importable sheet contains only headers. | Unit and integration template-upload regression. | pending hosted CI |
-| MED-03 SIMS active state | Manual activation/deactivation of `dataSource=SIMS` is rejected consistently with SIMS ownership policy. | PostgreSQL integration negative case. | pending hosted CI |
+| Finding | State | Evidence / boundary |
+| --- | --- | --- |
+| HIGH-03 eligible membership picker | CLOSED at `28fa14a` | Server filters active same-tenant teachers/employees before search/paging; PostgreSQL regression covers 150 students. |
+| HIGH-04 XLSX formulas/external content | CLOSED at `28fa14a` | Hosted baseline tests reject external worksheet links and formulas outside the import region. |
+| HIGH-05 membership/audit atomicity | CLOSED at `28fa14a` | Hosted trigger-failure regression proves creation/status and audit roll back together. |
+| HIGH-06 ZIP inflation | code fixed; hosted CI pending | Decompression output is bounded; actual entry size must equal central-directory size; actual aggregate output is capped before ExcelJS. |
+| HIGH-07 relationship XML bypass | code fixed; hosted CI pending | Bounded SAX parser checks every `.rels`, including `_rels/.rels`; it decodes attributes, rejects external mode/DTD/malformed or oversized XML, and limits relationship count. |
+| MED-01 preview retention purge | **OPEN** | Required before production processing of personal data; raw XLSX bytes are not persisted. |
+| MED-02 template examples | CLOSED at `28fa14a` | Examples are in `Instructions`, never in importable data rows. |
+| MED-03 SIMS activation ownership | CLOSED at `28fa14a` | Manual activation changes for SIMS-owned identities are denied. |
+| FR-003 delete | documented | Soft deactivation is the non-destructive Sprint 03 delete operation, preserving history. |
 
-## FR-003 delete decision
-
-The Sprint 03 delete acceptance is fulfilled by **soft deactivation**, not a destructive delete. This preserves cooperative, finance, shuttle, audit and historical references. The UI and API expose explicit activate/deactivate operations; hard deletion is intentionally outside the Sprint 03 policy.
-
-## Validation record
+## Validation record for current working set
 
 | Check | Status | Observed result |
 | --- | --- | --- |
-| API Master Data unit test | PASS | 7/7, including external hyperlink relationship, Instructions formula, and template-without-demo-import regression cases. |
-| `pnpm build` | PASS | Contracts, API TypeScript, and Vite production build. |
-| `pnpm lint` | PASS | Contracts, API, and Web TypeScript lint. |
-| `pnpm db:generate` and `prisma validate` | PASS | Generated Prisma Client and valid committed PostgreSQL schema. |
-| Local `pnpm test` | BLOCKED for integration only | Contracts 3/3, Web 13/13, API unit 9/9 pass. `security.integration.test.ts` intentionally rejects non-disposable/no-PostgreSQL execution. |
-| Local PostgreSQL integration | BLOCKED | Docker executable and disposable database are unavailable. |
-| GitHub Actions | pending | Must run against the eventual correction commit; no success claim is made for unpushed changes. |
+| Contracts/API/Web TypeScript checks | PASS | Direct TypeScript checks for contracts, API and Web completed without errors. |
+| Production Web build | PASS | Vite completed production build (1,735 modules transformed). |
+| API unit/security parser tests | PASS | `lib.test.ts` + `master-data-import.test.ts`: 14/14 tests passed. Parser coverage includes metadata falsification, bounded relationship XML, encoded root external mode, DTD rejection, safe internal relation, external hyperlink and formula. |
+| Contracts/Web tests | PASS | 16/16 tests passed across contracts and Web. |
+| Prisma schema validation | PASS | `prisma validate --schema apps/api/prisma/schema.prisma` passed with a local disposable URL supplied only for schema validation. |
+| `pnpm build`, `pnpm lint`, full workspace `pnpm test` | BLOCKED locally | pnpm attempts to register the workspace using a project-store symlink; this managed environment rejects it with `EPERM`. Direct equivalent non-database checks above passed. |
+| Local PostgreSQL integration | BLOCKED locally | Docker and a disposable PostgreSQL runtime are unavailable. |
+| New hosted GitHub Actions | pending | The reported 4/4 pass belongs to `28fa14a`, before HIGH-06/HIGH-07. |
 
-## Recommendation
+## Traceability and next action
 
-**REQUEST CHANGES** until the correction commit is pushed and PR #3 GitHub Actions completes PostgreSQL migration and security integration tests successfully. Do not merge or start Sprint 04 yet.
+All 86 IDs remain tracked: 14 FR, 10 NFR, 20 Main Quest and 42 Side Quest. No status is promoted to `verified` from these local checks. The next safe action is to commit/push this exact hardening set and wait for all four PR #3 checks, including migration and PostgreSQL integration.
+
+**Recommendation: REQUEST CHANGES** until that CI run succeeds. Do not merge or start Sprint 04.

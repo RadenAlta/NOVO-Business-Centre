@@ -1,6 +1,6 @@
 # Asah Quest Traceability
 
-**Sprint 03 update date:** 26 October 2026
+**Sprint 03 update date:** 27 October 2026
 **Rule:** a source file is not evidence of a completed quest. Each row below uses the project status vocabulary and is intentionally limited to this workspace audit.
 
 ## Main Quest (20)
@@ -93,3 +93,8 @@ The 62 quest rows remain in scope and retain their conservative statuses. Sprint
 ## Sprint 03 code-review correction traceability note
 
 All 20 Main Quest and 42 Side Quest rows remain in scope. The correction set strengthens SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11 with server-side candidate paging, atomic audit behavior, stricter workbook policy, and regression coverage. The branch has not yet run hosted CI for these edits, so no quest is promoted to `verified` and the review recommendation remains REQUEST CHANGES pending PR #3 checks.
+
+
+## Sprint 03 security-hardening note
+
+HIGH-06 and HIGH-07 change only the FR-004 import-security boundary. The 20 Main Quest and 42 Side Quest entries above remain tracked with their existing statuses; no quest is promoted to `verified` by the local parser tests. MED-01 scheduled preview-retention purge remains OPEN before production personal data.
