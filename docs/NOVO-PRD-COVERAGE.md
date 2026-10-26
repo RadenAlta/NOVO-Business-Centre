@@ -1,6 +1,6 @@
-# NOVO PRD Coverage — Sprint 02 Authentication & Security
+# NOVO PRD Coverage — Sprint 03 Master Data, Excel Import & Membership
 
-This document records the code and test surfaces completed on `codex/sprint-02-auth-security`. It does **not** declare production readiness, user acceptance, or completed requirements. The authoritative 86-row status is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+This document records the Sprint 03 source and test surfaces on `codex/sprint-03-master-data-import`. It does **not** declare production readiness, user acceptance, or completed requirements. The authoritative 86-row status is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
 
 ## Source surfaces inspected
 
@@ -8,7 +8,7 @@ This document records the code and test surfaces completed on `codex/sprint-02-a
 | --- | --- | --- |
 | Authentication, tenants and roles | PostgreSQL `UserSession` migrations; opaque SHA-256-hashed session, revocation, current-user role lookup, tenant-match middleware, and stable concurrent `/me` CSRF issuance. | partial |
 | Browser session security | HttpOnly cookie-only authentication; no browser bearer/session storage; stable memory-only CSRF, trusted-origin checks, per-principal query cache isolation/eviction, and retryable failed logout. | partial |
-| Master data and cooperative membership | Existing Prisma models/routes; integration suite uses master-data mutation as a secured tenant/RBAC negative path. | partial |
+| Master data, Excel import and cooperative membership | Tenant-scoped paginated CRUD/status routes, user-confirmed Excel template/preview/commit, one-time fingerprinted import previews, SIMS skip policy, and active teacher/employee-only memberships. The `MasterDataImportPreview` migration keeps raw workbooks out of persistence. | partial |
 | Store/POS and inventory | Product, stock and sale schema/routes/screens, including transactional sale source. | partial |
 | Shuttle | Subscription, invoice, payment and settlement schema/routes/screens. | partial |
 | Catering | Catering order routes/screens. | partial |
@@ -40,3 +40,7 @@ The CI API/Web job provisions PostgreSQL 16, applies committed Prisma migrations
 - Local pnpm/Prisma/test/lint commands are blocked by the workspace sandbox's project-store symlink `EPERM`; Docker/PostgreSQL are unavailable here.
 - No browser E2E, deployment, production backup/restore, SIMS-unavailability, accessibility, performance, or external-channel test has been observed.
 - The CSRF/origin/session controls, per-principal client cache isolation, and retryable logout UX are source-implemented but not security certification. Confirm PR checks, deployment TLS/CORS configuration, object-storage malware scanning, and a production threat review before release.
+
+## Sprint 03 acceptance boundary
+
+pps/api/src/security.integration.test.ts now covers synthetic Master Data CRUD, normalised duplicate-key rejection, tenant/RBAC boundaries, student/inactive membership denial, Excel template/preview/no-write, update, SIMS skip, tampered/replayed preview, formula and corrupted-workbook cases. pps/api/src/master-data-import.test.ts adds unit coverage for Unicode/whitespace normalisation and duplicate normalized keys. CI run 40259825586 failed in TypeScript before these tests could run; local pnpm build is blocked before compiler startup by the Codex project-store symlink EPERM. Therefore all Sprint 03 evidence remains partial, not erified.

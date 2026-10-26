@@ -1,6 +1,6 @@
 # Asah Quest Traceability
 
-**Sprint 02 update date:** 25 October 2026
+**Sprint 03 update date:** 26 October 2026
 **Rule:** a source file is not evidence of a completed quest. Each row below uses the project status vocabulary and is intentionally limited to this workspace audit.
 
 ## Main Quest (20)
@@ -89,3 +89,7 @@ No score, course-completion claim, or `62/62` claim is made. The next status cha
 ## Sprint 02 security traceability note
 
 The 62 quest rows remain in scope and retain their conservative statuses. Sprint 02 correction adds source/test evidence most directly to SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11, including stable CSRF concurrency, cache isolation and unconfirmed-logout handling. The PostgreSQL migration and security integration scenarios passed in hosted CI at `91b0a23` (API/Web push and PR jobs successful). Rows remain conservatively partial/blocked where full user-facing workflows, persistence across redeploy, or production deployment are not demonstrated.
+
+## Sprint 03 traceability note
+
+All 20 Main Quest and 42 Side Quest rows remain unchanged in scope. Sprint 03 source/test work most directly supports SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11 through the decoupled web/API import flow, Prisma preview migration, Zod validation, tenant/RBAC/CSRF checks and structured import errors. The source did not change a quest row to erified: run 40259825586 stopped at TypeScript compilation and local pnpm cannot initialize in this sandbox (EPERM).

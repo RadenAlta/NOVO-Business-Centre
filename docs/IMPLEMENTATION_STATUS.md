@@ -1,7 +1,7 @@
-# Sprint 02 — Authentication & Security Status
+# Sprint 03 — Master Data, Excel Import & Membership Status
 
-**Audit date:** 25 October 2026
-**Branch:** `codex/sprint-02-auth-security`
+**Audit date:** 26 October 2026
+**Branch:** `codex/sprint-03-master-data-import`
 **Audit boundary:** source-level review plus attempted sandbox commands and owner-reported GitHub Actions checks at PR head `91b0a23` (push run `40196407790`, PR run `40196411378`, 4/4 PASS). The CI includes disposable PostgreSQL migrations, build, tests, and lint. These results are not full product E2E or production acceptance.
 
 ## Status convention
@@ -11,9 +11,9 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | Status | Count | Meaning in this audit |
 | --- | ---: | --- |
 | verified | 0 | Executed behavior and passing test observed |
-| partial | 70 | Source or limited implementation observed, but behavior is not fully verified |
+| partial | 71 | Source or limited implementation observed, but behavior is not fully verified |
 | blocked | 6 | Required environment/deployment/runtime proof unavailable |
-| not-started | 10 | No qualifying implementation/evidence observed |
+| not-started | 9 | No qualifying implementation/evidence observed |
 | **Total** | **86** | **14 FR + 10 NFR + 20 Main Quest + 42 Side Quest** |
 
 ## Functional requirements (14)
@@ -22,9 +22,9 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | --- | --- | --- | --- | --- |
 | FR-001 | Authentication | Login/logout dan session persisten | partial | Hosted PostgreSQL security tests passed in CI for opaque 256-bit HttpOnly cookie, stable CSRF, session hashing, expiry/revocation and replay; browser E2E and production configuration remain unverified. |
 | FR-002 | RBAC | Validasi role/permission & business-unit scope di server | partial | Hosted PostgreSQL tests passed current-role, inactive-account and cross-tenant negative cases; full business-unit permission matrix and production threat review remain unverified. |
-| FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Static audit: `apps/api/src/app.ts` master-data CRUD/active-state routes and `apps/web/src/pages.tsx` MasterDataPage exist; no full feature-level CRUD integration test. |
-| FR-004 | Master Data Excel | Download template + impor Excel | not-started | No Excel template/download/import endpoint, parser, or web flow was found in `apps/api/src` or `apps/web/src`. |
-| FR-005 | Membership | Cooperative membership & eligibility | partial | Static audit: `app.ts` `/members` routes enforce teacher/employee eligibility and use `CooperativeMember`; no full feature-level CRUD integration test. |
+| FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Source now provides tenant-scoped paginated create/edit/status/filter routes, server-derived fields, SIMS edit protection and a Master Data screen. PostgreSQL integration coverage is present but unexecuted in this sandbox because pnpm cannot create its project-store symlink. |
+| FR-004 | Master Data Excel | Download template + impor Excel | partial | Source now provides an ExcelJS 4.4.0 template, server-side preview, short-lived user/tenant-bound fingerprint, single-use atomic commit, SIMS skip policy, archive/formula safeguards and web confirmation UI. Tests are present but unexecuted locally; no verified claim. |
+| FR-005 | Membership | Cooperative membership & eligibility | partial | New memberships derive name/contact from an active same-tenant teacher/employee identity; students, inactive/cross-tenant identities and duplicate links are denied. Existing legacy unlinked members are retained but ineligible for new shuttle, funding and financing benefits. Integration tests are pending. |
 | FR-006 | SO Store | POS, inventory, payment, receipt, history, stock movement | partial | Static audit: `app.ts` product, stock-adjustment and transactional `/sales` routes plus Store screen exist; no POS integration test. |
 | FR-007 | SO Shuttle | Subscription, billing, payment, settlement, reporting | partial | Static audit: `app.ts` shuttle route, subscription, invoice and payment routes exist; no billing/settlement integration test. |
 | FR-008 | Attachments | Upload/download persisten terotorisasi | partial | CI integration suite exercised a credentialed CSRF/origin-protected multipart upload; signature/hash and tenant-scoped download source exists. Production object storage, malware scanning, and end-to-end authorization remain unverified. |
@@ -151,3 +151,8 @@ Earlier CI failures (`pnpm` version conflict, PyTorch/CUDA disk quota, ignored b
 ## Current blockers and reproduce outside this sandbox
 
 Local `pnpm install --frozen-lockfile`, Prisma generation/migration, build, test and lint remain blocked by the sandbox project-store symlink `EPERM`; Docker/PostgreSQL are also unavailable. These are environment blockers, not a conclusion about source correctness. Run the PR workflow or a normal Windows PowerShell environment with Node 24, pnpm 11 and Docker Desktop; only promote a row to `verified` after recording an observed passing command and behavior.
+
+
+## Sprint 03 CI correction — 26 October 2026
+
+CI run 40259825586 stopped at seven TypeScript errors before tests ran. The workspace correction imports the existing exported identifier normalizer into API routes, converts Node 24 buffers into isolated ArrayBuffer input for ExcelJS 4.4.0, assigns dropdown validation through typed Cell.dataValidation, and adds normalization/duplicate tests. pnpm build remains **blocked locally** before compilation because the Codex runtime cannot create its project-store symlink (EPERM). No Sprint 03 requirement is marked erified from this source change.

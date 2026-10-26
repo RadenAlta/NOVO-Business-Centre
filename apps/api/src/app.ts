@@ -15,7 +15,7 @@ import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, re
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
-import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
+import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
 

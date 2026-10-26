@@ -9,7 +9,7 @@ import { app } from "./app.js";
 import { hashSecret } from "./auth.js";
 import { prisma } from "./db.js";
 import { env } from "./env.js";
-import { masterDataColumns } from "./master-data-import.js";
+import { masterDataColumns, toExcelJsBuffer } from "./master-data-import.js";
 
 const origin = "http://localhost:5173";
 const testDatabase = process.env.DATABASE_URL ?? "";
@@ -233,7 +233,7 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     expect(template.headers["content-disposition"]).toContain("novo-master-data-template.xlsx");
     expect(template.headers["content-type"]).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     const templateWorkbook = new ExcelJS.Workbook();
-    await templateWorkbook.xlsx.load(template.body as Buffer);
+    await templateWorkbook.xlsx.load(toExcelJsBuffer(template.body));
     expect(templateWorkbook.getWorksheet("Master Data")?.getRow(1).values).toContain("identifier");
 
     const buffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: "IMP-001", fullName: "Pegawai Import Sintetis", department: "Operasional", position: "Staf Koperasi" }]);

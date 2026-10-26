@@ -97,6 +97,15 @@ export function normalizeIdentifier(value: string): string {
   return normalizeText(value).toUpperCase();
 }
 
+// ExcelJS 4.4.0 declares its load input as a legacy global Buffer interface.
+// Copy into a standalone ArrayBuffer so Node 24's Buffer<ArrayBufferLike> is
+// never passed through that incompatible declaration or backed by shared memory.
+export function toExcelJsBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
 function safeOptional(value: string, max: number, field: string, row: number, issues: ImportIssue[], min = 1): string | undefined {
   const normalized = normalizeText(value);
   if (!normalized) return undefined;
@@ -227,7 +236,7 @@ export async function parseMasterDataWorkbook(bytes: Buffer): Promise<ImportPrev
   inspectXlsxArchive(bytes);
   const workbook = new ExcelJS.Workbook();
   try {
-    await workbook.xlsx.load(bytes);
+    await workbook.xlsx.load(toExcelJsBuffer(bytes));
   } catch {
     throw importError("INVALID_XLSX", "Workbook cannot be read as a valid .xlsx file.");
   }
@@ -305,7 +314,9 @@ export async function createMasterDataTemplate(): Promise<Buffer> {
   header.font = { bold: true, color: { argb: "FFFFFFFF" } };
   header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF176247" } };
   sheet.autoFilter = { from: "A1", to: `${String.fromCharCode(64 + masterDataColumns.length)}1` };
-  sheet.dataValidations.add(`A2:A${MAX_IMPORT_ROWS + 1}`, { type: "list", allowBlank: false, formulae: ['"STUDENT,TEACHER,EMPLOYEE"'] });
+  for (let row = 2; row <= MAX_IMPORT_ROWS + 1; row += 1) {
+    sheet.getCell(`A${row}`).dataValidation = { type: "list", allowBlank: false, formulae: ['"STUDENT,TEACHER,EMPLOYEE"'] };
+  }
 
   const examples: Array<Record<MasterDataColumn, string>> = [
     { type: "STUDENT", identifier: "SYN-STU-001", fullName: "Siswa Sintetis Satu", barcode: "CARD-SYN-001", className: "7-A", grade: "7", schoolYear: "2026/2027", department: "", position: "", email: "", phone: "" },
