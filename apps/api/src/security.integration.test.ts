@@ -70,11 +70,17 @@ async function createTenantUser(account: TestAccount, emailPrefix: string, role:
   return { tenantId: account.tenantId, slug: account.slug, userId: user.id, email, password };
 }
 
-async function withFailingCooperativeMemberAudit(action: "create" | "deactivate", callback: () => Promise<void>): Promise<void> {
-  await prisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION novo_fail_cooperative_member_audit() RETURNS trigger AS $ BEGIN IF NEW."entityType" = 'CooperativeMember' AND NEW.action = '${action}' THEN RAISE EXCEPTION 'forced cooperative-member audit failure'; END IF; RETURN NEW; END; $ LANGUAGE plpgsql;`);
+const cooperativeMemberAuditFailureSql = {
+  create: `CREATE OR REPLACE FUNCTION novo_fail_cooperative_member_audit() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW."entityType" = ''CooperativeMember'' AND NEW.action = ''create'' THEN RAISE EXCEPTION ''forced cooperative-member audit failure''; END IF; RETURN NEW; END;'`,
+  deactivate: `CREATE OR REPLACE FUNCTION novo_fail_cooperative_member_audit() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW."entityType" = ''CooperativeMember'' AND NEW.action = ''deactivate'' THEN RAISE EXCEPTION ''forced cooperative-member audit failure''; END IF; RETURN NEW; END;'`,
+} as const;
+
+async function withFailingCooperativeMemberAudit(action: keyof typeof cooperativeMemberAuditFailureSql, callback: () => Promise<void>): Promise<void> {
   await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_cooperative_member_audit_trigger ON "AuditLog";');
-  await prisma.$executeRawUnsafe('CREATE TRIGGER novo_fail_cooperative_member_audit_trigger BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION novo_fail_cooperative_member_audit();');
+  await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS novo_fail_cooperative_member_audit();');
   try {
+    await prisma.$executeRawUnsafe(cooperativeMemberAuditFailureSql[action]);
+    await prisma.$executeRawUnsafe('CREATE TRIGGER novo_fail_cooperative_member_audit_trigger BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION novo_fail_cooperative_member_audit();');
     await callback();
   } finally {
     await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_cooperative_member_audit_trigger ON "AuditLog";');
