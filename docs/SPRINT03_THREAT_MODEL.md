@@ -1,24 +1,24 @@
 # Sprint 03 threat model — Master Data, Excel, and membership
 
-## Scope and security boundary
+## Scope and trust boundary
 
-Sprint 03 handles synthetic Master Data only. The authenticated server session supplies the tenant, actor, and current role; browser claims for these fields are never accepted. The browser receives a short-lived preview identifier and fingerprint, not authority to decide what is written.
+Sprint 03 uses synthetic Master Data. The server-side session derives tenant, actor, role and active status. The browser can provide an XLSX and confirmation parameters, but it cannot provide tenant identity, a role, import authority, membership eligibility, or a source system override.
 
-| Threat | Control | Acceptance evidence |
+| Threat | Control | Evidence |
 | --- | --- | --- |
-| Forged tenant, role, or active state | Every route uses the Sprint 02 cookie session, CSRF/origin middleware, current database role, and tenant-scoped queries. Import payloads have no tenant/role/active fields. | Integration negative cases for viewer and cross-tenant reads/writes/imports. |
-| Corrupted, spoofed, macro-capable, external-reference, or oversized workbook | Accept only `.xlsx` Open XML MIME/extension plus ZIP signature; inspect archive entry count/size/path, reject macro/external-link entries, formulas, unsupported sheets, files above 2 MiB, and more than 500 data rows. Parsing stays in memory. | Integration tests for malformed/formula workbooks and upload limits. |
-| Formula injection in template or import | Templates escape formula-leading string cells. Imports reject formula cells and formula-leading field values before preview. | Template and formula rejection tests. |
-| Duplicate identifiers or concurrent import commits | Normalize `type + identifier`; detect in-file duplicates; create/update in a tenant-scoped serializable transaction. Preview consumption is atomic so one preview cannot commit twice. | Duplicate, retry, and concurrent-commit tests. |
-| Stale/tampered preview | Store normalized parsed rows, server fingerprint, tenant, actor, expiry, and consumption state. Commit only consumes a matching, unexpired preview and reclassifies against current database data. | Tampered fingerprint and expired-preview tests. |
-| Overwrite of SIMS-managed identity | Manual imports classify matching `dataSource=SIMS` rows as `skip`; they do not overwrite fields. Manual create/update paths do not accept source or external SIMS identifiers from the browser. | SIMS conflict preview/commit tests. |
-| Ineligible or inactive cooperative membership | New membership requires an active same-tenant `TEACHER` or `EMPLOYEE` identity. Student, inactive, foreign, duplicate, and legacy-unlinked identities cannot create a new membership. Existing historical memberships remain readable; downstream eligibility is derived from current identity status. | Membership integration cases and eligibility UI state. |
-| Private data in audit logs or retained uploads | The workbook bytes are never persisted. Preview rows are transient for ten minutes. Audit events store counts, source, keys, and actor—not row payloads, contact fields, or spreadsheet bytes. | Import audit assertions and source review. |
+| Forged tenant, role, active state or browser bearer | Opaque HttpOnly revocable session, fresh user lookup, trusted origin and CSRF; tenant predicate on every route; no browser bearer storage | Sprint 02 security suite and Sprint 03 negative cases in `security.integration.test.ts` |
+| Partial or malformed Excel row | Exact official headers; empty rows are ignored; non-empty rows require `identifier` and `fullName` and report their row/field | `safeRequired` plus 4-case `master-data-import.test.ts` |
+| Macro, formula, external link, ZIP bomb or oversized workbook | XLSX MIME/extension and ZIP inspection; reject unsafe paths/encryption/macro/external link/formula, 2 MiB input, 500 rows, unsafe expansion | `master-data-import.ts`; corrupted/formula integration cases |
+| Duplicate or concurrent import | NFKC/whitespace/case normalization of type plus identifier; unique database key; serializable transaction claims preview once | Duplicate unit case plus concurrent integration case |
+| Replay, stale, tampered, foreign preview | Preview stores actor, tenant, fingerprint, expiry and consumed-at state; commit filters all fields and atomically consumes once | Same-tenant-other-user, foreign-tenant, expiry, tamper and replay integration cases |
+| Cross-tenant or unsafe membership status | Status route requires admin and CSRF, scopes by tenant, and requires active non-student linked identity before activation | Lifecycle, inactive and foreign mutation integration cases |
+| Student or inactive cooperative use | Creation and reactivation reject students/inactive identities; downstream funding, financing and shuttle guard derives current eligibility | `requireEligibleCooperativeMember` and membership integration cases |
+| Audit leakage or raw workbook retention | Audit stores summary/source/key metadata; raw XLSX bytes are never written to database or disk | import route and audit assertion; see MED-01 for structured preview cleanup |
 
-## Import policy
+## Lifecycle policy
 
-Preview never writes Master Data. Commit is all-or-nothing for create/update rows: any row validation error blocks commit. Matching manual records are updated; matching SIMS-managed records are intentionally skipped; no source override exists in this sprint. A database conflict caused by a newer concurrent import aborts the whole transaction and returns a retryable conflict. This bounded transaction contains at most 500 rows.
+A teacher or employee may be deactivated without deleting historical membership or finance references. That immediately prevents new cooperative-benefit operations. An administrator may reactivate a member only if the linked record remains an active teacher or employee in the same tenant. A student and a legacy unlinked member can never be activated through this lifecycle. Every create, deactivate and activate event is auditable.
 
-## Membership lifecycle policy
+## Residual risk
 
-Deactivating a teacher or employee does not delete its membership or historical finance references. It makes the identity ineligible for new membership creation and new cooperative-benefit operations until reactivated. Legacy memberships with no linked identity remain available for historical display but are ineligible for new benefit operations.
+Preview expiration is enforced for authorization, but structured preview rows are lazily deleted rather than purged by a scheduled job. The raw uploaded workbook is not stored. Add an operational retention purge before using real personal data in production.
