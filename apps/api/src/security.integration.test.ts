@@ -61,6 +61,15 @@ async function login(agent: ReturnType<typeof request.agent>, account: TestAccou
   return agent.post("/api/v1/auth/login").set("Origin", origin).send({ tenantSlug: account.slug, email: account.email, password: account.password }).expect(200);
 }
 
+async function createTenantUser(account: TestAccount, emailPrefix: string, role: "ADMIN" | "VIEWER" = "ADMIN"): Promise<TestAccount> {
+  const email = `${emailPrefix}@example.test`;
+  const password = "SecurityPass123!";
+  const user = await prisma.user.create({
+    data: { tenantId: account.tenantId, email, name: `User ${emailPrefix}`, passwordHash: await bcrypt.hash(password, 4), role },
+  });
+  return { tenantId: account.tenantId, slug: account.slug, userId: user.id, email, password };
+}
+
 beforeEach(async () => {
   await mkdir(path.resolve(env.UPLOAD_DIR), { recursive: true });
   await clearTestData();
@@ -225,7 +234,12 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     await agent.post("/api/v1/members").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ identityId: student.body.id, memberNo: "COOP-STU" }).expect(400);
     const member = await agent.post("/api/v1/members").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ identityId: teacher.body.id, memberNo: "COOP-TCH-001" }).expect(201);
     await agent.post("/api/v1/members").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ identityId: teacher.body.id, memberNo: "COOP-TCH-002" }).expect(409);
+    await agent.patch(`/api/v1/members/${member.body.id}/active`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ active: false }).expect(204);
+    await agent.post("/api/v1/funding/accounts").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ memberId: member.body.id }).expect(400);
+    await agent.patch(`/api/v1/members/${member.body.id}/active`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ active: true }).expect(204);
+    await otherAgent.patch(`/api/v1/members/${member.body.id}/active`).set("Origin", origin).set("X-Novo-Csrf", otherMe.body.csrfToken as string).send({ active: false }).expect(404);
     await agent.patch(`/api/v1/master-data/${teacher.body.id}/active`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ active: false }).expect(204);
+    await agent.patch(`/api/v1/members/${member.body.id}/active`).set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ active: true }).expect(400);
     await agent.post("/api/v1/funding/accounts").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ memberId: member.body.id }).expect(400);
     const audits = await agent.get("/api/v1/audit-logs").expect(200);
     expect(audits.body.data.some((entry: { entityType: string }) => entry.entityType === "CooperativeMember")).toBe(true);
@@ -233,8 +247,14 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
 
   it("downloads a template, previews without writes, commits exactly once, and rejects unsafe workbooks", async () => {
     const account = await createAccount("master-import");
+    const sameTenantUser = await createTenantUser(account, "master-import-other-user");
+    const otherAccount = await createAccount("master-import-other-tenant");
     const agent = request.agent(app);
+    const sameTenantAgent = request.agent(app);
+    const otherAgent = request.agent(app);
     const signedIn = await login(agent, account);
+    const sameTenantSignedIn = await login(sameTenantAgent, sameTenantUser);
+    const otherSignedIn = await login(otherAgent, otherAccount);
     const csrfToken = signedIn.body.csrfToken as string;
     const template = await agent.get("/api/v1/master-data/imports/template").buffer(true).parse(binaryResponseParser).expect(200);
     expect(template.headers["content-disposition"]).toContain("novo-master-data-template.xlsx");
@@ -249,6 +269,8 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     const preview = await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", buffer, { filename: "master-data.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(201);
     expect(preview.body.summary).toEqual({ create: 1, update: 0, skip: 0, error: 0 });
     expect(await prisma.masterDataRecord.count({ where: { tenantId: account.tenantId } })).toBe(0);
+    await sameTenantAgent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", sameTenantSignedIn.body.csrfToken as string).send({ previewId: preview.body.previewId, fingerprint: preview.body.fingerprint }).expect(409);
+    await otherAgent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", otherSignedIn.body.csrfToken as string).send({ previewId: preview.body.previewId, fingerprint: preview.body.fingerprint }).expect(409);
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: preview.body.previewId, fingerprint: preview.body.fingerprint }).expect(200);
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: preview.body.previewId, fingerprint: preview.body.fingerprint }).expect(409);
     const updateBuffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: "IMP-001", fullName: "Pegawai Import Diperbarui", department: "Operasional", position: "Staf Koperasi" }]);
@@ -267,6 +289,20 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: simsPreview.body.previewId, fingerprint: "0".repeat(64) }).expect(409);
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: simsPreview.body.previewId, fingerprint: simsPreview.body.fingerprint }).expect(200);
     expect((await prisma.masterDataRecord.findFirstOrThrow({ where: { tenantId: account.tenantId, type: "EMPLOYEE", identifier: "SIMS-001" } })).fullName).toBe("SIMS Synthetic");
+
+    const expiredBuffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: "EXP-001", fullName: "Preview Kedaluwarsa", department: "Operasional", position: "Staf" }]);
+    const expiredPreview = await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", expiredBuffer, { filename: "expired.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(201);
+    await prisma.masterDataImportPreview.update({ where: { id: expiredPreview.body.previewId }, data: { expiresAt: new Date(Date.now() - 1_000) } });
+    await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: expiredPreview.body.previewId, fingerprint: expiredPreview.body.fingerprint }).expect(409);
+
+    const concurrentBuffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: "CONCURRENT-001", fullName: "Preview Serentak", department: "Operasional", position: "Staf" }]);
+    const concurrentPreview = await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", concurrentBuffer, { filename: "concurrent.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(201);
+    const concurrentCommits = await Promise.all([
+      agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: concurrentPreview.body.previewId, fingerprint: concurrentPreview.body.fingerprint }),
+      agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: concurrentPreview.body.previewId, fingerprint: concurrentPreview.body.fingerprint }),
+    ]);
+    expect(concurrentCommits.map((response) => response.status).sort()).toEqual([200, 409]);
+    expect(await prisma.masterDataRecord.count({ where: { tenantId: account.tenantId, type: "EMPLOYEE", identifier: "CONCURRENT-001" } })).toBe(1);
 
     const formulaBuffer = await createImportWorkbook([{ type: "EMPLOYEE", identifier: { formula: "1+1" }, fullName: "Formula Sintetis", department: "Operasional", position: "Staf" }]);
     const formulaPreview = await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", formulaBuffer, { filename: "formula.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(201);

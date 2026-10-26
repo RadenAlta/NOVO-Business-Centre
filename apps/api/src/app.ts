@@ -333,6 +333,22 @@ api.post("/members", requireRoles(...adminRoles), asyncRoute(async (request, res
   await audit(me(request), "create", "CooperativeMember", member.id, { memberNo: member.memberNo, identityId: member.identityId, active: member.active });
   response.status(201).json(member);
 }));
+
+api.patch("/members/:id/active", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
+  const memberId = id.parse(request.params.id);
+  const input = z.object({ active: z.boolean() }).strict().parse(request.body);
+  const member = await prisma.cooperativeMember.findFirst({
+    where: { id: memberId, tenantId: me(request).tenantId },
+    include: { identity: { select: { id: true, type: true, active: true } } },
+  });
+  if (!member) throw new HttpError(404, "NOT_FOUND", "Cooperative member not found.");
+  if (input.active && (!member.identity || !member.identity.active || member.identity.type === "STUDENT")) {
+    throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity may have an active cooperative membership.");
+  }
+  await prisma.cooperativeMember.update({ where: { id: member.id }, data: input });
+  await audit(me(request), input.active ? "activate" : "deactivate", "CooperativeMember", member.id, { memberNo: member.memberNo, identityId: member.identityId, active: input.active });
+  response.status(204).end();
+}));
 api.get("/products", asyncRoute(async (request, response) => {
   const products = await prisma.product.findMany({
     where: { tenantId: me(request).tenantId },

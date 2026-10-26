@@ -120,6 +120,14 @@ function safeOptional(value: string, max: number, field: string, row: number, is
   return normalized;
 }
 
+function safeRequired(value: string, max: number, field: string, row: number, issues: ImportIssue[], min = 1): string | undefined {
+  const normalized = safeOptional(value, max, field, row, issues, min);
+  if (!normalized && !issues.some((issue) => issue.row === row && issue.field === field)) {
+    issues.push({ row, field, message: "A value is required." });
+  }
+  return normalized;
+}
+
 function safeCellText(cell: ExcelJS.Cell, row: number, field: string, issues: ImportIssue[]): string {
   const value = cell.value;
   if (cell.type === ExcelJS.ValueType.Formula || (typeof value === "object" && value !== null && "formula" in value)) {
@@ -203,8 +211,8 @@ function rowFromWorksheet(row: ExcelJS.Row, rowNumber: number, issues: ImportIss
 
   const type = values.type.toUpperCase();
   if (!identityTypes.includes(type as IdentityType)) issues.push({ row: rowNumber, field: "type", message: "Type must be STUDENT, TEACHER, or EMPLOYEE." });
-  const identifier = safeOptional(values.identifier, 80, "identifier", rowNumber, issues, 2);
-  const fullName = safeOptional(values.fullName, 160, "fullName", rowNumber, issues, 2);
+  const identifier = safeRequired(values.identifier, 80, "identifier", rowNumber, issues, 2);
+  const fullName = safeRequired(values.fullName, 160, "fullName", rowNumber, issues, 2);
   const barcode = safeOptional(values.barcode, 80, "barcode", rowNumber, issues, 2);
   const className = safeOptional(values.className, 80, "className", rowNumber, issues);
   const grade = safeOptional(values.grade, 40, "grade", rowNumber, issues);
