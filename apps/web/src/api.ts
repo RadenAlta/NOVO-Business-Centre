@@ -43,3 +43,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
+export async function downloadApiFile(path: string): Promise<Blob> {
+  const response = await fetch(`${baseUrl}${path}`, { credentials: "include" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined) as { error?: { message?: string; code?: string } } | undefined;
+    if (response.status === 401) {
+      clearActiveSession();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event("novo:unauthenticated"));
+    }
+    throw new ApiError(response.status, body?.error?.message ?? "Request failed.", body?.error?.code);
+  }
+  return response.blob();
+}
