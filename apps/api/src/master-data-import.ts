@@ -191,7 +191,7 @@ function inspectXlsxArchive(bytes: Buffer): void {
 
 function assertExpectedHeaders(sheet: ExcelJS.Worksheet): void {
   const headerIssues: ImportIssue[] = [];
-  const headers = masterDataColumns.map((column, index) => safeCellText(sheet.getRow(1).getCell(index + 1), 1, column, headerIssues).toLowerCase());
+  const headers = masterDataColumns.map((column, index) => safeCellText(sheet.getRow(1).getCell(index + 1), 1, column, headerIssues));
   if (headerIssues.length || sheet.getRow(1).actualCellCount !== masterDataColumns.length || headers.some((header, index) => header !== masterDataColumns[index])) {
     throw importError("INVALID_IMPORT_HEADERS", "Workbook headers must exactly match the NOVO Master Data template.", { expected: masterDataColumns });
   }

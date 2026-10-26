@@ -27,6 +27,13 @@ function cookieFrom(response: request.Response): string {
   return first.split(";", 1)[0] ?? "";
 }
 
+function binaryResponseParser(response: request.Response, callback: (error: Error | null, body: Buffer) => void): void {
+  const chunks: Buffer[] = [];
+  response.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+  response.once("end", () => callback(null, Buffer.concat(chunks)));
+  response.once("error", (error: Error) => callback(error, Buffer.alloc(0)));
+}
+
 async function clearTestData(): Promise<void> {
   await prisma.savingsLedgerEntry.deleteMany();
   await prisma.savingsAccount.deleteMany();
@@ -229,9 +236,11 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     const agent = request.agent(app);
     const signedIn = await login(agent, account);
     const csrfToken = signedIn.body.csrfToken as string;
-    const template = await agent.get("/api/v1/master-data/imports/template").expect(200);
+    const template = await agent.get("/api/v1/master-data/imports/template").buffer(true).parse(binaryResponseParser).expect(200);
     expect(template.headers["content-disposition"]).toContain("novo-master-data-template.xlsx");
     expect(template.headers["content-type"]).toContain("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    expect(Buffer.isBuffer(template.body)).toBe(true);
+    expect(template.body.byteLength).toBeGreaterThan(100);
     const templateWorkbook = new ExcelJS.Workbook();
     await templateWorkbook.xlsx.load(toExcelJsBuffer(template.body));
     expect(templateWorkbook.getWorksheet("Master Data")?.getRow(1).values).toContain("identifier");

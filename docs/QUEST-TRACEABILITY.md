@@ -92,4 +92,4 @@ The 62 quest rows remain in scope and retain their conservative statuses. Sprint
 
 ## Sprint 03 traceability note
 
-All 20 Main Quest and 42 Side Quest rows remain unchanged in scope. Sprint 03 source/test work most directly supports SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11 through the decoupled web/API import flow, Prisma preview migration, Zod validation, tenant/RBAC/CSRF checks and structured import errors. The source did not change a quest row to erified: run 40259825586 stopped at TypeScript compilation and local pnpm cannot initialize in this sandbox (EPERM).
+All 20 Main Quest and 42 Side Quest rows remain unchanged in scope. Sprint 03 source/test work most directly supports SQ-01, SQ-03, SQ-06, SQ-10 and SQ-11 through the decoupled web/API import flow, Prisma preview migration, Zod validation, tenant/RBAC/CSRF checks, strict spreadsheet contract validation and structured import errors. The source did not change a quest row to `verified`: CI run `40291860500` still needs a successful PostgreSQL-backed test job after this fixture correction.
