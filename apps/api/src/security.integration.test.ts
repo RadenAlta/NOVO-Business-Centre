@@ -551,3 +551,15 @@ describe("Sprint 04 POS movement rollback", () => {
     await agent.post("/api/v1/sales/"+sale.body.id+"/void").set("Origin",origin).set("X-Novo-Csrf",csrf).send({reason:"Retry after cleanup"}).expect(200);expect((await prisma.sale.findUniqueOrThrow({where:{id:sale.body.id}})).status).toBe("VOIDED");expect(await prisma.stockMovement.count({where:{saleId:sale.body.id,reason:"POS_VOID"}})).toBe(1);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(1);
   });
 });
+
+
+describe("Sprint 04 receipt movement rollback", () => {
+  it("rolls back stock receipt when STOCK_RECEIPT movement insertion fails", async () => {
+    const account=await createAccount("receipt-movement-failure");const agent=request.agent(app);const signed=await login(agent,account);const csrf=signed.body.csrfToken as string;
+    const product=await agent.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",csrf).send({sku:"RCVFAIL-01",name:"Receipt Failure",unitPrice:10000,initialStock:2}).expect(201);
+    const baseline={stock:(await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand,movements:await prisma.stockMovement.count({where:{productId:product.body.id}}),audits:await prisma.auditLog.count({where:{tenantId:account.tenantId,action:"receive_stock",entityId:product.body.id}})};
+    await withFixtureMovementFailure(account.tenantId,"STOCK_RECEIPT","receipt",async()=>{await agent.post("/api/v1/products/"+product.body.id+"/receipts").set("Origin",origin).set("X-Novo-Csrf",csrf).send({quantity:3,reference:"RCV-FAIL-01"}).expect(500);});
+    expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(baseline.stock);expect(await prisma.stockMovement.count({where:{productId:product.body.id}})).toBe(baseline.movements);expect(await prisma.auditLog.count({where:{tenantId:account.tenantId,action:"receive_stock",entityId:product.body.id}})).toBe(baseline.audits);
+    await agent.post("/api/v1/products/"+product.body.id+"/receipts").set("Origin",origin).set("X-Novo-Csrf",csrf).send({quantity:3,reference:"RCV-OK-01"}).expect(201);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(5);expect(await prisma.stockMovement.count({where:{productId:product.body.id,reason:"STOCK_RECEIPT"}})).toBe(1);
+  });
+});
