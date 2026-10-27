@@ -569,3 +569,52 @@ describe("Sprint 04 receipt audit rollback",()=>{it("rolls back stock receipt wh
 
 
 describe("Sprint 04 adjustment movement rollback",()=>{it("rolls back stock adjustment when StockMovement insertion fails",async()=>{const a=await createAccount("adjustment-movement-failure"),g=request.agent(app),l=await login(g,a),c=l.body.csrfToken as string,pd=await g.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",c).send({sku:"ADJFAIL-01",name:"Adjustment Failure",unitPrice:10000,initialStock:5}).expect(201),reason="CP4 adjustment fixture",full="STOCK_ADJUSTMENT: "+reason,b={s:(await prisma.product.findUniqueOrThrow({where:{id:pd.body.id}})).stockOnHand,m:await prisma.stockMovement.count({where:{productId:pd.body.id}}),a:await prisma.auditLog.count({where:{tenantId:a.tenantId,action:"adjust_stock"}})},fn="novo_fail_adjustment_movement",tr=fn+"_trigger";await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS '+tr+' ON "StockMovement";');try{await prisma.$executeRawUnsafe("CREATE FUNCTION "+fn+"() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''"+a.tenantId.replace(/'/g,"''")+"'' AND NEW.reason = ''"+full+"'' THEN RAISE EXCEPTION ''adjustment failure''; END IF; RETURN NEW; END;'");await prisma.$executeRawUnsafe('CREATE TRIGGER '+tr+' BEFORE INSERT ON "StockMovement" FOR EACH ROW EXECUTE FUNCTION '+fn+'();');await g.post("/api/v1/products/"+pd.body.id+"/adjustments").set("Origin",origin).set("X-Novo-Csrf",c).send({quantity:-2,reason}).expect(500);expect((await prisma.product.findUniqueOrThrow({where:{id:pd.body.id}})).stockOnHand).toBe(b.s);expect(await prisma.stockMovement.count({where:{productId:pd.body.id}})).toBe(b.m);expect(await prisma.auditLog.count({where:{tenantId:a.tenantId,action:"adjust_stock"}})).toBe(b.a);}finally{await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS '+tr+' ON "StockMovement";');await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS '+fn+'();');}const ok=await g.post("/api/v1/products/"+pd.body.id+"/adjustments").set("Origin",origin).set("X-Novo-Csrf",c).send({quantity:-2,reason}).expect(201);expect(ok.body.quantity).toBe(-2);expect(ok.body.balanceAfter).toBe(3);expect((await prisma.product.findUniqueOrThrow({where:{id:pd.body.id}})).stockOnHand).toBe(3);});});
+
+
+describe("Sprint 04 adjustment audit rollback", () => {
+  it("rolls back stock adjustment when adjust_stock audit insertion fails", async () => {
+    const account = await createAccount("adjustment-audit-failure");
+    const agent = request.agent(app);
+    const loginResult = await login(agent, account);
+    const csrf = loginResult.body.csrfToken as string;
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "ADJAUD-01", name: "Adjustment Audit Failure", unitPrice: 10000, initialStock: 5 }).expect(201);
+    const reason = "CP4 adjustment fixture";
+    const movementReason = "STOCK_ADJUSTMENT: " + reason;
+    const baseline = {
+      stock: (await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand,
+      movements: await prisma.stockMovement.count({ where: { productId: product.body.id } }),
+      audits: await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "adjust_stock", entityId: product.body.id } })
+    };
+    const functionName = "novo_fail_adjustment_audit";
+    const triggerName = functionName + "_trigger";
+    const tenantId = account.tenantId.replace(/'/g, "''");
+
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "AuditLog";');
+    try {
+      await prisma.$executeRawUnsafe("CREATE FUNCTION " + functionName + "() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''" + tenantId + "'' AND NEW.action = ''adjust_stock'' THEN RAISE EXCEPTION ''forced adjustment audit failure''; END IF; RETURN NEW; END;'");
+      await prisma.$executeRawUnsafe('CREATE TRIGGER ' + triggerName + ' BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION ' + functionName + '();');
+
+      await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -2, reason }).expect(500);
+
+      expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(baseline.stock);
+      expect(await prisma.stockMovement.count({ where: { productId: product.body.id, reason: movementReason } })).toBe(0);
+      expect(await prisma.stockMovement.count({ where: { productId: product.body.id } })).toBe(baseline.movements);
+      expect(await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "adjust_stock", entityId: product.body.id } })).toBe(baseline.audits);
+    } finally {
+      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "AuditLog";');
+      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + functionName + '();');
+    }
+
+    const retry = await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -2, reason }).expect(201);
+    expect(retry.body.quantity).toBe(-2);
+    expect(retry.body.balanceAfter).toBe(3);
+    const persistedProduct = await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } });
+    const movements = await prisma.stockMovement.findMany({ where: { productId: product.body.id, reason: movementReason } });
+    const audits = await prisma.auditLog.findMany({ where: { tenantId: account.tenantId, action: "adjust_stock", entityId: product.body.id } });
+    expect(persistedProduct.stockOnHand).toBe(3);
+    expect(movements).toHaveLength(1);
+    expect(movements[0]).toMatchObject({ tenantId: account.tenantId, productId: product.body.id, quantity: -2, balanceAfter: 3, performedById: account.userId });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ tenantId: account.tenantId, actorId: account.userId, action: "adjust_stock", entityType: "Product", entityId: product.body.id });
+  });
+});
