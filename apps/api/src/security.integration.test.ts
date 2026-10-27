@@ -479,3 +479,30 @@ describe("Sprint 04 Store financial transaction integrity", () => {
     expect((await prisma.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe("VOIDED");
   });
 });
+
+
+async function withStoreAuditFailure(action: string, callback: () => Promise<void>): Promise<void> {
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_store_audit_trigger ON "AuditLog";');
+  await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS novo_fail_store_audit();');
+  try {
+    await prisma.$executeRawUnsafe("CREATE FUNCTION novo_fail_store_audit() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"entityType\" = ''Sale'' AND NEW.action = ''" + action + "'' THEN RAISE EXCEPTION ''forced store audit failure''; END IF; RETURN NEW; END;'");
+    await prisma.$executeRawUnsafe('CREATE TRIGGER novo_fail_store_audit_trigger BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION novo_fail_store_audit();');
+    await callback();
+  } finally {
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_store_audit_trigger ON "AuditLog";');
+    await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS novo_fail_store_audit();');
+  }
+}
+
+describe("Sprint 04 Store atomic audit rollback", () => {
+  it("rolls back checkout and void when their Sale audit write fails", async () => {
+    const account = await createAccount("store-rollback"); const agent = request.agent(app); const loginResult = await login(agent, account); const csrf = loginResult.body.csrfToken as string;
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "ROLLBACK-01", name: "Rollback Product", unitPrice: 10000, initialStock: 2 }).expect(201);
+    const checkoutBody = { paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] };
+    await withStoreAuditFailure("checkout", async () => { await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "rollback-checkout-01").send(checkoutBody).expect(500); });
+    expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(0); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(0); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(0); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(2);
+    const sale = await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "rollback-checkout-02").send(checkoutBody).expect(201);
+    await withStoreAuditFailure("void", async () => { await agent.post("/api/v1/sales/" + sale.body.id + "/void").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ reason: "Rollback void" }).expect(500); });
+    const persisted = await prisma.sale.findUniqueOrThrow({ where: { id: sale.body.id } }); expect(persisted.status).toBe("COMPLETED"); expect(persisted.voidReason).toBeNull(); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(1); expect(await prisma.stockMovement.count({ where: { saleId: sale.body.id, reason: "POS_VOID" } })).toBe(0);
+  });
+});
