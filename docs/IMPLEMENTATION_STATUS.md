@@ -1,8 +1,8 @@
-# Sprint 02 — Authentication & Security Status
+# Sprint 03 — Master Data, Excel Import & Membership Status
 
-**Audit date:** 25 October 2026
-**Branch:** `codex/sprint-02-auth-security`
-**Audit boundary:** source-level review plus attempted sandbox commands and owner-reported GitHub Actions checks at PR head `91b0a23` (push run `40196407790`, PR run `40196411378`, 4/4 PASS). The CI includes disposable PostgreSQL migrations, build, tests, and lint. These results are not full product E2E or production acceptance.
+**Audit date:** 27 October 2026
+**Branch:** `codex/sprint-03-master-data-import`
+**Audit boundary:** Sprint 03 baseline `28fa14a` against `main` `671f049`, owner-reported PR #3 CI 4/4 pass for that baseline, and the uncommitted HIGH-06/HIGH-07 hardening audited locally on 27 October 2026. The hosted API/Web job uses disposable PostgreSQL, applies committed migrations, then runs build, all workspace tests, and lint. The new hardening still requires its own hosted run; this is not full browser E2E, production deployment, or security certification.
 
 ## Status convention
 
@@ -11,9 +11,9 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | Status | Count | Meaning in this audit |
 | --- | ---: | --- |
 | verified | 0 | Executed behavior and passing test observed |
-| partial | 70 | Source or limited implementation observed, but behavior is not fully verified |
+| partial | 71 | Source or limited implementation observed, but behavior is not fully verified |
 | blocked | 6 | Required environment/deployment/runtime proof unavailable |
-| not-started | 10 | No qualifying implementation/evidence observed |
+| not-started | 9 | No qualifying implementation/evidence observed |
 | **Total** | **86** | **14 FR + 10 NFR + 20 Main Quest + 42 Side Quest** |
 
 ## Functional requirements (14)
@@ -22,9 +22,9 @@ Only four statuses are used: `not-started`, `partial`, `verified`, and `blocked`
 | --- | --- | --- | --- | --- |
 | FR-001 | Authentication | Login/logout dan session persisten | partial | Hosted PostgreSQL security tests passed in CI for opaque 256-bit HttpOnly cookie, stable CSRF, session hashing, expiry/revocation and replay; browser E2E and production configuration remain unverified. |
 | FR-002 | RBAC | Validasi role/permission & business-unit scope di server | partial | Hosted PostgreSQL tests passed current-role, inactive-account and cross-tenant negative cases; full business-unit permission matrix and production threat review remain unverified. |
-| FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Static audit: `apps/api/src/app.ts` master-data CRUD/active-state routes and `apps/web/src/pages.tsx` MasterDataPage exist; no full feature-level CRUD integration test. |
-| FR-004 | Master Data Excel | Download template + impor Excel | not-started | No Excel template/download/import endpoint, parser, or web flow was found in `apps/api/src` or `apps/web/src`. |
-| FR-005 | Membership | Cooperative membership & eligibility | partial | Static audit: `app.ts` `/members` routes enforce teacher/employee eligibility and use `CooperativeMember`; no full feature-level CRUD integration test. |
+| FR-003 | Master Data | CRUD Student/Teacher/Employee | partial | Tenant-scoped CRUD/status/search/filter/pagination plus identifier normalization and SIMS protection are implemented. Hosted CI covered its PostgreSQL security scenarios; browser E2E remains unverified. |
+| FR-004 | Master Data Excel | Download template + impor Excel | partial | Exact XLSX template, bounded ZIP expansion/relationship policy, formula safeguards, actor/tenant-bound expiry, serializable one-use commit and concurrency tests are implemented. HIGH-06/HIGH-07 have local parser tests but require hosted CI for this working set. Raw XLSX bytes are not persisted; scheduled structured-preview cleanup remains MED-01 OPEN. |
+| FR-005 | Membership | Cooperative membership & eligibility | partial | Creation and reactivation require an active same-tenant teacher or employee; students, inactive/foreign identities and duplicates are denied. Status changes are admin-only, CSRF-protected and audited. Legacy unlinked members remain historical but ineligible. |
 | FR-006 | SO Store | POS, inventory, payment, receipt, history, stock movement | partial | Static audit: `app.ts` product, stock-adjustment and transactional `/sales` routes plus Store screen exist; no POS integration test. |
 | FR-007 | SO Shuttle | Subscription, billing, payment, settlement, reporting | partial | Static audit: `app.ts` shuttle route, subscription, invoice and payment routes exist; no billing/settlement integration test. |
 | FR-008 | Attachments | Upload/download persisten terotorisasi | partial | CI integration suite exercised a credentialed CSRF/origin-protected multipart upload; signature/hash and tenant-scoped download source exists. Production object storage, malware scanning, and end-to-end authorization remain unverified. |
@@ -151,3 +151,12 @@ Earlier CI failures (`pnpm` version conflict, PyTorch/CUDA disk quota, ignored b
 ## Current blockers and reproduce outside this sandbox
 
 Local `pnpm install --frozen-lockfile`, Prisma generation/migration, build, test and lint remain blocked by the sandbox project-store symlink `EPERM`; Docker/PostgreSQL are also unavailable. These are environment blockers, not a conclusion about source correctness. Run the PR workflow or a normal Windows PowerShell environment with Node 24, pnpm 11 and Docker Desktop; only promote a row to `verified` after recording an observed passing command and behavior.
+
+
+## Sprint 03 code-review corrections — 26 October 2026
+
+PR #3 review found HIGH-03 through HIGH-05. The correction set adds an eligible-member server query that filters active teacher/employee records before search/pagination, rejects external XLSX relationships/hyperlinks and formulas anywhere in allowed sheets, moves synthetic examples out of the importable sheet, makes membership create/status audit-atomic, and rejects manual SIMS activation changes. FR-003 delete remains a deliberate soft-deactivation policy to preserve records and history.
+
+Local evidence: API Master Data unit 7/7, build, lint, Prisma generation and schema validation pass. Contracts 3/3, Web 13/13 and API non-database unit 9/9 pass in the full local command. PostgreSQL integration is intentionally blocked locally without Docker and a disposable database. The temporary correction is not pushed; all HIGH findings remain pending hosted CI rather than `verified`.
+
+MED-01 is mandatory before real personal data: add scheduled expiry cleanup for structured preview payloads. All 86 requirement IDs remain tracked; no blanket completion claim is made.

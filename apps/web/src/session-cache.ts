@@ -3,8 +3,8 @@ import type { Session } from "./api";
 
 export const protectedQueryScope = ["novo-protected"] as const;
 
-export function protectedQueryKey(resource: string, session: Session) {
-  return [...protectedQueryScope, resource, session.tenant.id, session.user.id, session.user.role] as const;
+export function protectedQueryKey(resource: string, session: Session, queryScope?: string) {
+  return [...protectedQueryScope, resource, session.tenant.id, session.user.id, session.user.role, ...(queryScope ? [queryScope] : [])] as const;
 }
 
 export function protectedQueryPrefix(resource?: string) {

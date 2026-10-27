@@ -8,12 +8,14 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import path from "node:path";
 
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { audit } from "./audit.js";
 import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, requireRoles, requireTrustedOrigin, issueCsrfToken, revokeSessionForLogout, setSessionCookie } from "./auth.js";
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
+import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
 
@@ -37,6 +39,16 @@ const upload = multer({
   fileFilter: (_request, file, callback) => {
     const allowed = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
     callback(null, allowed.includes(file.mimetype));
+  },
+});
+
+const masterDataImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMPORT_FILE_BYTES, files: 1 },
+  fileFilter: (_request, file, callback) => {
+    const hasXlsxExtension = file.originalname.toLowerCase().endsWith(".xlsx");
+    const hasXlsxMime = file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    callback(null, hasXlsxExtension && hasXlsxMime);
   },
 });
 
@@ -111,88 +123,261 @@ api.get("/me", asyncRoute(async (request, response) => {
   response.json({ user: { ...user, tenantId: auth.tenantId }, tenant: user.tenant, csrfToken });
 }));
 
-const masterDataInput = z.object({
-  type: z.enum(["STUDENT", "TEACHER", "EMPLOYEE"]),
+const masterDataType = z.enum(["STUDENT", "TEACHER", "EMPLOYEE"]);
+const optionalMasterText = (minimum: number, maximum: number) => z.string().trim().min(minimum).max(maximum).nullable().optional();
+const masterDataCreateInput = z.object({
+  type: masterDataType,
   identifier: z.string().trim().min(2).max(80),
-  barcode: z.string().trim().min(2).max(80).optional(),
+  barcode: optionalMasterText(2, 80),
   fullName: z.string().trim().min(2).max(160),
-  className: z.string().trim().min(1).max(80).optional(),
-  grade: z.string().trim().min(1).max(40).optional(),
-  schoolYear: z.string().trim().min(4).max(20).optional(),
-  department: z.string().trim().min(2).max(120).optional(),
-  position: z.string().trim().min(2).max(120).optional(),
-  email: z.string().trim().email().optional(),
-  phone: z.string().trim().min(6).max(30).optional(),
-  dataSource: z.string().trim().min(2).max(40).default("MANUAL"),
-  externalSimsId: z.string().trim().min(2).max(100).optional(),
-});
+  className: optionalMasterText(1, 80),
+  grade: optionalMasterText(1, 40),
+  schoolYear: optionalMasterText(4, 20),
+  department: optionalMasterText(2, 120),
+  position: optionalMasterText(2, 120),
+  email: z.string().trim().email().nullable().optional(),
+  phone: optionalMasterText(6, 30),
+}).strict();
+const masterDataPatchInput = masterDataCreateInput.partial().refine((value) => Object.keys(value).length > 0, "Provide at least one field to update.");
+const masterDataListQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  type: masterDataType.optional(),
+  active: z.enum(["true", "false"]).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
+const masterDataImportCommitInput = z.object({
+  previewId: id,
+  fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+const memberEligibleIdentityQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+}).strict();
+type MasterDataType = z.infer<typeof masterDataType>;
+type MasterDataCreateInput = z.infer<typeof masterDataCreateInput>;
+type MasterDataPatchInput = z.infer<typeof masterDataPatchInput>;
+
+function normalizeMasterDataFields(input: MasterDataCreateInput | MasterDataPatchInput, effectiveType: MasterDataType, clearIncompatible = false) {
+  if (effectiveType === "STUDENT" && (input.department !== undefined || input.position !== undefined)) {
+    throw new HttpError(400, "INVALID_MASTER_DATA", "Student identities cannot have a department or position.");
+  }
+  if (effectiveType !== "STUDENT" && (input.className !== undefined || input.grade !== undefined || input.schoolYear !== undefined)) {
+    throw new HttpError(400, "INVALID_MASTER_DATA", "Teacher and employee identities cannot have student class fields.");
+  }
+  const common = {
+    ...(input.type !== undefined ? { type: input.type } : {}),
+    ...(input.identifier !== undefined ? { identifier: normalizeIdentifier(input.identifier) } : {}),
+    ...(input.fullName !== undefined ? { fullName: input.fullName } : {}),
+    ...(input.barcode !== undefined ? { barcode: input.barcode ? normalizeIdentifier(input.barcode) : null } : {}),
+    ...(input.email !== undefined ? { email: input.email ? input.email.toLowerCase() : null } : {}),
+    ...(input.phone !== undefined ? { phone: input.phone } : {}),
+  };
+  if (effectiveType === "STUDENT") {
+    return {
+      ...common,
+      ...(input.className !== undefined ? { className: input.className } : {}),
+      ...(input.grade !== undefined ? { grade: input.grade } : {}),
+      ...(input.schoolYear !== undefined ? { schoolYear: input.schoolYear } : {}),
+      ...(clearIncompatible ? { department: null, position: null } : {}),
+    };
+  }
+  return {
+    ...common,
+    ...(input.department !== undefined ? { department: input.department } : {}),
+    ...(input.position !== undefined ? { position: input.position } : {}),
+    ...(clearIncompatible ? { className: null, grade: null, schoolYear: null } : {}),
+  };
+}
+
+function masterDataAuditRecord(record: { type: string; identifier: string; active: boolean; dataSource: string }) {
+  return { type: record.type, identifier: record.identifier, active: record.active, dataSource: record.dataSource };
+}
+
+function importRecordKey(record: { type: string; identifier: string }): string {
+  return `${record.type}:${record.identifier}`;
+}
+
+async function requireEligibleCooperativeMember(memberId: string, tenantId: string) {
+  const member = await prisma.cooperativeMember.findFirst({ where: { id: memberId, tenantId }, include: { identity: { select: { id: true, type: true, active: true } } } });
+  if (!member) throw new HttpError(404, "NOT_FOUND", "Member not found.");
+  if (!member.active || !member.identity || !member.identity.active || member.identity.type === "STUDENT") {
+    throw new HttpError(400, "INELIGIBLE_COOPERATIVE_MEMBER", "An active teacher or employee identity is required for new cooperative-benefit operations.");
+  }
+  return member;
+}
 
 api.get("/master-data", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
-  const query = z.object({ q: z.string().trim().optional(), type: z.enum(["STUDENT", "TEACHER", "EMPLOYEE"]).optional(), active: z.enum(["true", "false"]).optional() }).parse(request.query);
-  const records = await prisma.masterDataRecord.findMany({
-    where: {
-      tenantId: me(request).tenantId,
-      ...(query.type ? { type: query.type } : {}),
-      ...(query.active ? { active: query.active === "true" } : {}),
-      ...(query.q ? { OR: [{ fullName: { contains: query.q, mode: "insensitive" } }, { identifier: { contains: query.q, mode: "insensitive" } }, { barcode: { contains: query.q, mode: "insensitive" } }] } : {}),
-    },
-    orderBy: [{ type: "asc" }, { fullName: "asc" }],
-    take: 200,
-  });
-  response.json({ data: records });
+  const query = masterDataListQuery.parse(request.query);
+  const tenantId = me(request).tenantId;
+  const where = {
+    tenantId,
+    ...(query.type ? { type: query.type } : {}),
+    ...(query.active ? { active: query.active === "true" } : {}),
+    ...(query.q ? { OR: [{ fullName: { contains: query.q, mode: "insensitive" as const } }, { identifier: { contains: query.q, mode: "insensitive" as const } }, { barcode: { contains: query.q, mode: "insensitive" as const } }] } : {}),
+  };
+  const [total, records] = await prisma.$transaction([
+    prisma.masterDataRecord.count({ where }),
+    prisma.masterDataRecord.findMany({ where, orderBy: [{ type: "asc" }, { fullName: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+  ]);
+  response.json({ data: records, pagination: { page: query.page, pageSize: query.pageSize, total, pageCount: Math.ceil(total / query.pageSize) } });
+}));
+
+api.get("/master-data/member-eligible", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
+  const query = memberEligibleIdentityQuery.parse(request.query);
+  const where = {
+    tenantId: me(request).tenantId,
+    active: true,
+    type: { in: ["TEACHER", "EMPLOYEE"] as MasterDataType[] },
+    ...(query.q ? { OR: [{ fullName: { contains: query.q, mode: "insensitive" as const } }, { identifier: { contains: query.q, mode: "insensitive" as const } }, { department: { contains: query.q, mode: "insensitive" as const } }, { position: { contains: query.q, mode: "insensitive" as const } }] } : {}),
+  };
+  const [total, records] = await prisma.$transaction([
+    prisma.masterDataRecord.count({ where }),
+    prisma.masterDataRecord.findMany({ where, select: { id: true, type: true, identifier: true, fullName: true, department: true, position: true, active: true }, orderBy: [{ fullName: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+  ]);
+  response.json({ data: records, pagination: { page: query.page, pageSize: query.pageSize, total, pageCount: Math.ceil(total / query.pageSize) } });
 }));
 
 api.post("/master-data", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
-  const input = masterDataInput.parse(request.body);
-  const record = await prisma.masterDataRecord.create({ data: { ...input, tenantId: me(request).tenantId } });
-  await audit(me(request), "create", "MasterDataRecord", record.id, { type: record.type, identifier: record.identifier });
+  const input = masterDataCreateInput.parse(request.body);
+  const data = normalizeMasterDataFields(input, input.type);
+  const record = await prisma.masterDataRecord.create({ data: { tenantId: me(request).tenantId, dataSource: "MANUAL", ...data, type: input.type, identifier: normalizeIdentifier(input.identifier), fullName: input.fullName } });
+  await audit(me(request), "create", "MasterDataRecord", record.id, masterDataAuditRecord(record));
   response.status(201).json(record);
 }));
 
 api.patch("/master-data/:id", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const recordId = id.parse(request.params.id);
-  const input = masterDataInput.partial().extend({ active: z.boolean().optional() }).parse(request.body);
+  const input = masterDataPatchInput.parse(request.body);
   const existing = await prisma.masterDataRecord.findFirst({ where: { id: recordId, tenantId: me(request).tenantId } });
   if (!existing) throw new HttpError(404, "NOT_FOUND", "Master data record not found.");
-  const record = await prisma.masterDataRecord.update({ where: { id: recordId }, data: input });
-  await audit(me(request), "update", "MasterDataRecord", record.id, { before: existing, after: record });
+  if (existing.dataSource === "SIMS") throw new HttpError(409, "SIMS_MANAGED_RECORD", "SIMS-managed identity fields cannot be edited manually.");
+  const nextType = input.type ?? existing.type;
+  const record = await prisma.masterDataRecord.update({ where: { id: recordId }, data: normalizeMasterDataFields(input, nextType, input.type !== undefined && input.type !== existing.type) });
+  await audit(me(request), "update", "MasterDataRecord", record.id, { before: masterDataAuditRecord(existing), after: masterDataAuditRecord(record) });
   response.json(record);
 }));
 
 api.patch("/master-data/:id/active", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const recordId = id.parse(request.params.id);
-  const input = z.object({ active: z.boolean() }).parse(request.body);
-  const updated = await prisma.masterDataRecord.updateMany({ where: { id: recordId, tenantId: me(request).tenantId }, data: input });
-  if (!updated.count) throw new HttpError(404, "NOT_FOUND", "Master data record not found.");
+  const input = z.object({ active: z.boolean() }).strict().parse(request.body);
+  const existing = await prisma.masterDataRecord.findFirst({ where: { id: recordId, tenantId: me(request).tenantId } });
+  if (!existing) throw new HttpError(404, "NOT_FOUND", "Master data record not found.");
+  if (existing.dataSource === "SIMS") throw new HttpError(409, "SIMS_MANAGED_RECORD", "SIMS-managed activation status cannot be changed manually.");
+  await prisma.masterDataRecord.update({ where: { id: existing.id }, data: input });
   await audit(me(request), input.active ? "activate" : "deactivate", "MasterDataRecord", recordId, input);
   response.status(204).end();
 }));
-api.get("/members", asyncRoute(async (request, response) => {
-  const query = z.object({ q: z.string().trim().optional() }).parse(request.query);
-  const members = await prisma.cooperativeMember.findMany({
-    where: { tenantId: me(request).tenantId, ...(query.q ? { OR: [{ name: { contains: query.q, mode: "insensitive" } }, { memberNo: { contains: query.q, mode: "insensitive" } }] } : {}) },
-    orderBy: { name: "asc" }, take: 100,
-  });
-  response.json({ data: members });
+
+api.get("/master-data/imports/template", requireRoles(...adminRoles), asyncRoute(async (_request, response) => {
+  const workbook = await createMasterDataTemplate();
+  response.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  response.attachment(MASTER_DATA_TEMPLATE_FILENAME).send(workbook);
+}));
+
+api.post("/master-data/imports/preview", requireRoles(...adminRoles), masterDataImportUpload.single("file"), asyncRoute(async (request, response) => {
+  if (!request.file) throw new HttpError(400, "XLSX_REQUIRED", "Upload one .xlsx workbook created from the NOVO template.");
+  const payload = await parseMasterDataWorkbook(request.file.buffer);
+  const tenantId = me(request).tenantId;
+  const existingRecords: ExistingMasterDataRecord[] = payload.rows.length ? await prisma.masterDataRecord.findMany({
+    where: { tenantId, OR: payload.rows.map((row) => ({ type: row.type, identifier: row.identifier })) },
+    select: { id: true, type: true, identifier: true, dataSource: true },
+  }) : [];
+  const classification = classifyImportPreview(payload, existingRecords);
+  const fingerprint = fingerprintImportPreview(payload);
+  const expiresAt = new Date(Date.now() + IMPORT_PREVIEW_TTL_MS);
+  await prisma.masterDataImportPreview.deleteMany({ where: { tenantId, createdById: me(request).id, expiresAt: { lt: new Date() } } });
+  const preview = await prisma.masterDataImportPreview.create({ data: { tenantId, createdById: me(request).id, fingerprint, payload: payload as unknown as Prisma.InputJsonValue, expiresAt } });
+  await audit(me(request), "preview_import", "MasterDataImportPreview", preview.id, { summary: classification.summary, source: "XLSX" });
+  response.status(201).json({ previewId: preview.id, fingerprint, expiresAt, summary: classification.summary, rows: classification.rows, issues: payload.issues });
+}));
+
+api.post("/master-data/imports/commit", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
+  const input = masterDataImportCommitInput.parse(request.body);
+  const actor = me(request);
+  const result = await prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const preview = await tx.masterDataImportPreview.findFirst({ where: { id: input.previewId, tenantId: actor.tenantId, createdById: actor.id, fingerprint: input.fingerprint, expiresAt: { gt: now }, consumedAt: null } });
+    if (!preview) throw new HttpError(409, "IMPORT_PREVIEW_INVALID", "Preview is expired, altered, or already committed. Create a new preview.");
+    const claimed = await tx.masterDataImportPreview.updateMany({ where: { id: preview.id, consumedAt: null, expiresAt: { gt: now } }, data: { consumedAt: now } });
+    if (claimed.count !== 1) throw new HttpError(409, "IMPORT_PREVIEW_ALREADY_USED", "This preview was already committed. Refresh the Master Data list.");
+
+    const payload = importPreviewPayloadSchema.parse(preview.payload);
+    if (payload.issues.length) throw new HttpError(422, "IMPORT_PREVIEW_HAS_ERRORS", "Fix every preview error before committing the import.", { issues: payload.issues });
+    const existingRecords: ExistingMasterDataRecord[] = payload.rows.length ? await tx.masterDataRecord.findMany({
+      where: { tenantId: actor.tenantId, OR: payload.rows.map((row) => ({ type: row.type, identifier: row.identifier })) },
+      select: { id: true, type: true, identifier: true, dataSource: true },
+    }) : [];
+    const classification = classifyImportPreview(payload, existingRecords);
+    const existingByKey = new Map(existingRecords.map((record) => [importRecordKey(record), record]));
+    for (const row of payload.rows) {
+      const existing = existingByKey.get(importRecordKey(row));
+      if (existing?.dataSource === "SIMS") continue;
+      const data = {
+        fullName: row.fullName,
+        barcode: row.barcode ?? null,
+        className: row.className ?? null,
+        grade: row.grade ?? null,
+        schoolYear: row.schoolYear ?? null,
+        department: row.department ?? null,
+        position: row.position ?? null,
+        email: row.email ?? null,
+        phone: row.phone ?? null,
+      };
+      if (existing) await tx.masterDataRecord.update({ where: { id: existing.id }, data });
+      else await tx.masterDataRecord.create({ data: { tenantId: actor.tenantId, type: row.type, identifier: row.identifier, dataSource: "MANUAL", ...data } });
+    }
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "commit_import", entityType: "MasterDataImportPreview", entityId: preview.id, after: { summary: classification.summary, source: "XLSX" } as unknown as Prisma.InputJsonValue } });
+    return classification.summary;
+  }, { isolationLevel: "Serializable", timeout: 10_000 });
+  response.json({ summary: result });
+}));
+
+const memberReadRoles: UserRole[] = [...writeRoles, "ANALYST"];
+api.get("/members", requireRoles(...memberReadRoles), asyncRoute(async (request, response) => {
+  const query = z.object({ q: z.string().trim().max(120).optional(), page: z.coerce.number().int().min(1).max(10_000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).strict().parse(request.query);
+  const where = { tenantId: me(request).tenantId, ...(query.q ? { OR: [{ name: { contains: query.q, mode: "insensitive" as const } }, { memberNo: { contains: query.q, mode: "insensitive" as const } }] } : {}) };
+  const [total, members] = await prisma.$transaction([
+    prisma.cooperativeMember.count({ where }),
+    prisma.cooperativeMember.findMany({ where, include: { identity: { select: { id: true, type: true, identifier: true, fullName: true, active: true } } }, orderBy: { name: "asc" }, skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+  ]);
+  response.json({ data: members.map((member) => ({ ...member, eligible: Boolean(member.identity && member.identity.active && member.identity.type !== "STUDENT") })), pagination: { page: query.page, pageSize: query.pageSize, total, pageCount: Math.ceil(total / query.pageSize) } });
 }));
 
 api.post("/members", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
   const input = memberInput.parse(request.body);
-  let memberData = input;
-  if (input.identityId) {
-    const identity = await prisma.masterDataRecord.findFirst({
-      where: { id: input.identityId, tenantId: me(request).tenantId },
-    });
-    if (!identity || identity.type === "STUDENT") {
-      throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only a teacher or employee identity may become a cooperative member.");
+  const actor = me(request);
+  const member = await prisma.$transaction(async (tx) => {
+    const identity = await tx.masterDataRecord.findFirst({ where: { id: input.identityId, tenantId: actor.tenantId }, select: { id: true, type: true, active: true, fullName: true, email: true, phone: true } });
+    if (!identity || identity.type === "STUDENT" || !identity.active) {
+      throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity from this tenant may become a cooperative member.");
     }
-    memberData = { ...input, name: identity.fullName, email: identity.email ?? input.email, phone: identity.phone ?? input.phone };
-  }
-  const member = await prisma.cooperativeMember.create({ data: { ...memberData, tenantId: me(request).tenantId } });
-  await audit(me(request), "create", "CooperativeMember", member.id, member);
+    const created = await tx.cooperativeMember.create({ data: { tenantId: actor.tenantId, identityId: identity.id, memberNo: normalizeIdentifier(input.memberNo), name: identity.fullName, email: identity.email, phone: identity.phone } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "CooperativeMember", entityId: created.id, after: { memberNo: created.memberNo, identityId: created.identityId, active: created.active } as unknown as Prisma.InputJsonValue } });
+    return created;
+  });
   response.status(201).json(member);
 }));
 
+api.patch("/members/:id/active", requireRoles(...adminRoles), asyncRoute(async (request, response) => {
+  const memberId = id.parse(request.params.id);
+  const input = z.object({ active: z.boolean() }).strict().parse(request.body);
+  const actor = me(request);
+  await prisma.$transaction(async (tx) => {
+    const member = await tx.cooperativeMember.findFirst({
+      where: { id: memberId, tenantId: actor.tenantId },
+      include: { identity: { select: { id: true, type: true, active: true } } },
+    });
+    if (!member) throw new HttpError(404, "NOT_FOUND", "Cooperative member not found.");
+    if (input.active && (!member.identity || !member.identity.active || member.identity.type === "STUDENT")) {
+      throw new HttpError(400, "INELIGIBLE_MEMBER_IDENTITY", "Only an active teacher or employee identity may have an active cooperative membership.");
+    }
+    await tx.cooperativeMember.update({ where: { id: member.id }, data: input });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: input.active ? "activate" : "deactivate", entityType: "CooperativeMember", entityId: member.id, after: { memberNo: member.memberNo, identityId: member.identityId, active: input.active } as unknown as Prisma.InputJsonValue } });
+  });
+  response.status(204).end();
+}));
 api.get("/products", asyncRoute(async (request, response) => {
   const products = await prisma.product.findMany({
     where: { tenantId: me(request).tenantId },
@@ -272,7 +457,7 @@ api.get("/shuttle/subscriptions", asyncRoute(async (request, response) => {
 api.post("/shuttle/subscriptions", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER"), asyncRoute(async (request, response) => {
   const input = z.object({ memberId: id, routeId: id, startDate: date, endDate: date.optional() }).parse(request.body);
   const [member, route] = await Promise.all([
-    prisma.cooperativeMember.findFirst({ where: { id: input.memberId, tenantId: me(request).tenantId, active: true } }),
+    requireEligibleCooperativeMember(input.memberId, me(request).tenantId),
     prisma.shuttleRoute.findFirst({ where: { id: input.routeId, tenantId: me(request).tenantId, active: true } }),
   ]);
   if (!member || !route) throw new HttpError(400, "INVALID_SUBSCRIPTION", "Member or route is unavailable.");
@@ -339,8 +524,7 @@ api.get("/funding/accounts", requireRoles("OWNER", "ADMIN", "FINANCE_OFFICER"), 
 
 api.post("/funding/accounts", requireRoles("OWNER", "ADMIN", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
   const input = z.object({ memberId: id }).parse(request.body);
-  const member = await prisma.cooperativeMember.findFirst({ where: { id: input.memberId, tenantId: me(request).tenantId } });
-  if (!member) throw new HttpError(404, "NOT_FOUND", "Member not found.");
+  const member = await requireEligibleCooperativeMember(input.memberId, me(request).tenantId);
   const account = await prisma.savingsAccount.create({ data: { tenantId: me(request).tenantId, memberId: input.memberId, accountNo: makeReference("SAV") } });
   await audit(me(request), "create", "SavingsAccount", account.id, account);
   response.status(201).json(account);
@@ -364,8 +548,7 @@ api.get("/financing/applications", requireRoles("OWNER", "ADMIN", "FINANCE_OFFIC
 
 api.post("/financing/applications", requireRoles("OWNER", "ADMIN", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
   const input = z.object({ memberId: id, purpose: z.string().trim().min(8).max(500), principal: money.positive(), installmentCount: z.coerce.number().int().min(1).max(60), firstDueDate: date }).parse(request.body);
-  const member = await prisma.cooperativeMember.findFirst({ where: { id: input.memberId, tenantId: me(request).tenantId } });
-  if (!member) throw new HttpError(404, "NOT_FOUND", "Member not found.");
+  const member = await requireEligibleCooperativeMember(input.memberId, me(request).tenantId);
   const installment = Math.round((input.principal / input.installmentCount) * 100) / 100;
   const application = await prisma.financingApplication.create({ data: { tenantId: me(request).tenantId, memberId: input.memberId, applicationNo: makeReference("FIN"), purpose: input.purpose, principal: input.principal, outstanding: input.principal, status: "SUBMITTED", submittedAt: new Date(), receivables: { create: Array.from({ length: input.installmentCount }, (_, index) => ({ installmentNo: index + 1, amount: index === input.installmentCount - 1 ? input.principal - installment * (input.installmentCount - 1) : installment, dueDate: new Date(input.firstDueDate.getFullYear(), input.firstDueDate.getMonth() + index, input.firstDueDate.getDate()) })) } }, include: { receivables: true } });
   await audit(me(request), "submit", "FinancingApplication", application.id, application);
@@ -478,7 +661,9 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   console.error("request failed", error);
   if (error instanceof z.ZodError) return response.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Check the submitted fields.", details: error.flatten() } });
   if (error instanceof HttpError) return response.status(error.status).json({ error: { code: error.code, message: error.message, details: error.details } });
+  if (error instanceof multer.MulterError) return response.status(400).json({ error: { code: "INVALID_IMPORT_UPLOAD", message: "Upload one .xlsx workbook within the permitted size limit." } });
   if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "P2002") return response.status(409).json({ error: { code: "DUPLICATE_RECORD", message: "A record with that identifier already exists." } });
+  if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "P2034") return response.status(409).json({ error: { code: "IMPORT_CONFLICT", message: "The import changed concurrently. Refresh the preview and try again." } });
   return response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } });
 });
 

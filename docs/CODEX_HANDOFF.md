@@ -1,63 +1,41 @@
-# CODEX Handoff — Sprint 02 / PR #2 final CI evidence
+# CODEX Handoff — Sprint 03 PR #3 final XLSX hardening
 
-## Scope and Git checkpoint
+## Git state
 
 - Repository: `RadenAlta/NOVO-Business-Centre` (private).
-- Branch and Draft PR: `codex/sprint-02-auth-security` → `main`, [PR #2](https://github.com/RadenAlta/NOVO-Business-Centre/pull/2). Do **not** merge automatically.
-- Final reviewed PR head: `91b0a23bc49b0d137a70fb096594e5933649ed9b` (`test: correct CSRF assertion after unauthorized response`).
-- Confirmed current CI evidence, reported from GitHub CLI: push `40196407790` and PR `40196411378` both completed with API/Web and ML checks passing (4/4). The required API/Web workflow runs disposable PostgreSQL 16, Prisma migration, build, all workspace Vitest suites, and lint in order. Sprint 03 is out of scope.
+- Branch: `codex/sprint-03-master-data-import`; base `main`: `671f049`; existing PR: #3.
+- Latest pushed baseline: `28fa14a`, with PR #3 GitHub Actions reported **4/4 PASS** by the review request.
+- Current tree changes HIGH-06 and HIGH-07 only. They are not committed or pushed from this environment because Git cannot create `.git/index.lock`.
 
-## Root causes and corrections
+## Sprint 03 review and hardening state
 
-| Finding | Cause at `2645d05` | Correction in this workspace |
+| Finding | State | Evidence / boundary |
 | --- | --- | --- |
-| Web TS6133 | `DemandForecast` accepted `session` but did not read it. | Remove the unused prop and caller binding without changing forecast input. |
-| API TS2345 | `request.agent(app)` inferred `TestAgent<Test>` was incompatible with `request.SuperAgentTest` in the test helper. | Type `login` with `ReturnType<typeof request.agent>`; cookie-persisting agent behavior is unchanged. |
-| `/me` CSRF race | Each GET rotated `csrfTokenHash`; overlapping reads could invalidate an earlier response. | Add migration `202610250003_stable_csrf_token`, persist one non-authentication CSRF value per session, and atomically backfill legacy null values. Raw session tokens remain SHA-256-hashed only. |
-| React Query cache leak | Keys were tenant-only and the app-level QueryClient outlived user sessions. | Scope keys by tenant/user/role, pass query abort signals, and cancel/remove all protected queries on sign-in, logout and unauthentication. |
-| Logout UX | A `finally` cleared UI state even when server revocation/network failed. | Confirm logout before clearing state; 401 means already invalidated, while network/5xx retains state and shows an actionable retry message. |
-| Web logout assertion | The 401 regression expected JSON `Content-Type` on a bodyless `POST /auth/logout`, although the client correctly sends no body or content type. | Assert the intended request contract: credentialed POST, CSRF used before the 401, then no CSRF and no JSON content type after the 401. Production client code is unchanged. |
+| HIGH-03 eligible membership picker | CLOSED at `28fa14a` | Server filters active same-tenant teachers/employees before search/paging; PostgreSQL regression covers 150 students. |
+| HIGH-04 XLSX formulas/external content | CLOSED at `28fa14a` | Hosted baseline tests reject external worksheet links and formulas outside the import region. |
+| HIGH-05 membership/audit atomicity | CLOSED at `28fa14a` | Hosted trigger-failure regression proves creation/status and audit roll back together. |
+| HIGH-06 ZIP inflation | code fixed; hosted CI pending | Decompression output is bounded; actual entry size must equal central-directory size; actual aggregate output is capped before ExcelJS. |
+| HIGH-07 relationship XML bypass | code fixed; hosted CI pending | Bounded SAX parser checks every `.rels`, including `_rels/.rels`; it decodes attributes, rejects external mode/DTD/malformed or oversized XML, and limits relationship count. |
+| MED-01 preview retention purge | **OPEN** | Required before production processing of personal data; raw XLSX bytes are not persisted. |
+| MED-02 template examples | CLOSED at `28fa14a` | Examples are in `Instructions`, never in importable data rows. |
+| MED-03 SIMS activation ownership | CLOSED at `28fa14a` | Manual activation changes for SIMS-owned identities are denied. |
+| FR-003 delete | documented | Soft deactivation is the non-destructive Sprint 03 delete operation, preserving history. |
 
-## Changed paths
+## Validation record for current working set
 
-- API/database: `apps/api/prisma/schema.prisma`, `apps/api/prisma/migrations/202610250003_stable_csrf_token/migration.sql`, `apps/api/src/auth.ts`, `apps/api/src/app.ts`, `apps/api/src/security.integration.test.ts`.
-- Web: `apps/web/src/App.tsx`, `apps/web/src/pages.tsx`, `apps/web/src/session-cache.ts`, `apps/web/src/logout.ts`, `apps/web/src/api.test.ts`, and their regression tests.
-- Documentation: `docs/SECURITY.md`, `docs/API-CONTRACT.md`, `docs/IMPLEMENTATION_STATUS.md`, `docs/NOVO-PRD-COVERAGE.md`, `docs/QUEST-TRACEABILITY.md`, this handoff.
-
-## Regression coverage added
-
-- PostgreSQL integration: two overlapping `/me` calls against a legacy-compatible session return usable CSRF values, and both values authorize later writes. Existing integration coverage retains logout replay, expiry, role change, inactive account, cross-tenant write, CSRF/origin, and multipart cases.
-- Web unit: two same-tenant users receive different protected query keys; protected cache removal is asserted; successful server logout, network/5xx unconfirmed logout, and already-invalid 401 logout are distinguished.
-- Web API client: a pre-401 JSON POST carries memory-only CSRF; the next bodyless logout POST remains credentialed but carries neither CSRF nor `Content-Type`.
-
-## Validation record
-
-| Check | Status | Observed evidence |
+| Check | Status | Observed result |
 | --- | --- | --- |
-| Git checkpoint | PASS | PR #2 head at `91b0a23`, based on the existing Sprint 02 branch; no history rewrite or merge. |
-| `git diff --check` / package JSON validation | PASS | No whitespace errors; package JSON parses; all 86 requirement IDs remain unique (14 FR, 10 NFR, 20 Main Quest, 42 Side Quest). |
-| Hosted CI at `91b0a23` | PASS | GitHub CLI reports 4/4 successful jobs: API/Web push and pull_request, ML push and pull_request; runs `40196407790` and `40196411378`. |
-| `pnpm install --frozen-lockfile` | BLOCKED locally | Sandbox pnpm project-store symlink `EPERM`. |
-| `pnpm db:generate`, `pnpm build`, `pnpm test`, `pnpm lint` | BLOCKED locally | Same dependency/runtime blocker. |
-| PostgreSQL migration and integration suite | PASS (hosted CI) | Mandatory migration and `pnpm test` steps precede the successful API/Web job completion. Full test totals were not independently captured in this handoff. |
-| ML jobs | PASS (hosted CI) | Both push and PR ML checks passed on the current PR head; no ML source changes were introduced in this correction. |
+| Contracts/API/Web TypeScript checks | PASS | Direct TypeScript checks for contracts, API and Web completed without errors. |
+| Production Web build | PASS | Vite completed production build (1,735 modules transformed). |
+| API unit/security parser tests | PASS | `lib.test.ts` + `master-data-import.test.ts`: 14/14 tests passed. Parser coverage includes metadata falsification, bounded relationship XML, encoded root external mode, DTD rejection, safe internal relation, external hyperlink and formula. |
+| Contracts/Web tests | PASS | 16/16 tests passed across contracts and Web. |
+| Prisma schema validation | PASS | `prisma validate --schema apps/api/prisma/schema.prisma` passed with a local disposable URL supplied only for schema validation. |
+| `pnpm build`, `pnpm lint`, full workspace `pnpm test` | BLOCKED locally | pnpm attempts to register the workspace using a project-store symlink; this managed environment rejects it with `EPERM`. Direct equivalent non-database checks above passed. |
+| Local PostgreSQL integration | BLOCKED locally | Docker and a disposable PostgreSQL runtime are unavailable. |
+| New hosted GitHub Actions | pending | The reported 4/4 pass belongs to `28fa14a`, before HIGH-06/HIGH-07. |
 
-## Review and owner commands
+## Traceability and next action
 
-Run these in ordinary Windows PowerShell from the repository after reviewing the diff:
+All 86 IDs remain tracked: 14 FR, 10 NFR, 20 Main Quest and 42 Side Quest. No status is promoted to `verified` from these local checks. The next safe action is to commit/push this exact hardening set and wait for all four PR #3 checks, including migration and PostgreSQL integration.
 
-```powershell
-Set-Location C:\Users\raden\dev\projects\NOVO-Business-Centre
-git diff --check
-git add -- docs/CODEX_HANDOFF.md docs/IMPLEMENTATION_STATUS.md docs/NOVO-PRD-COVERAGE.md docs/QUEST-TRACEABILITY.md docs/SECURITY.md
-git diff --cached --check
-git commit -m "docs: record Sprint 02 final CI evidence"
-git push origin codex/sprint-02-auth-security
-gh pr checks 2 --repo RadenAlta/NOVO-Business-Centre --watch
-```
-
-After the documentation-only commit passes its own GitHub checks, review PR #2 before explicitly marking it ready and merging. A successful security-focused CI suite does not prove every product requirement or production configuration.
-
-## Explicit non-claims
-
-All 86 requirement IDs remain tracked exactly once. Current hosted CI is 4/4 PASS, but this does not claim production readiness, 86/86 functional completion, a full browser E2E audit, capstone completion, or an automatic merge.
+**Recommendation: REQUEST CHANGES** until that CI run succeeds. Do not merge or start Sprint 04.

@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, PackagePlus, Plus, Send, Sparkles, Store, UsersRound } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, CheckCircle2, PackagePlus, Plus, Send, Sparkles, Store } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { api, ApiError, type Session } from "./api";
 import { protectedQueryKey, protectedQueryPrefix } from "./session-cache";
+
 
 type Product = { id: string; sku: string; name: string; unitPrice: number; reorderLevel: number; stock: number };
 type Member = { id: string; memberNo: string; name: string };
@@ -10,18 +11,7 @@ type Route = { id: string; code: string; name: string; monthlyRate: number; stop
 type Account = { id: string; accountNo: string; balance: number; member: Member; entries: { id: string; direction: string; amount: number; description: string }[] };
 type Dashboard = { salesRevenue: number; salesCount: number; openCateringOrders: number; activeShuttleSubscriptions: number; outstandingInvoices: number; lowStock: { id: string; name: string; sku: string; stock: number; reorderLevel: number }[] };
 type QueryList<T> = { data: T[] };
-type MasterDataRecord = {
-  id: string;
-  type: "STUDENT" | "TEACHER" | "EMPLOYEE";
-  identifier: string;
-  fullName: string;
-  barcode?: string | null;
-  className?: string | null;
-  department?: string | null;
-  position?: string | null;
-  active: boolean;
-  dataSource: string;
-};
+
 
 const rupiah = new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 });
 const money = (value: number) => rupiah.format(value ?? 0);
@@ -57,27 +47,8 @@ export function DashboardPage({ session }: { session: Session }) {
 function Metric({ label, value, note, tone = "green" }: { label: string; value: string; note: string; tone?: string }) { return <Card className={`metric ${tone}`}><p>{label}</p><strong>{value}</strong><small>{note}</small></Card>; }
 function Empty({ label }: { label: string }) { return <p className="empty">{label}</p>; }
 
-export function MasterDataPage({ session }: { session: Session }) {
-  const client = useQueryClient();
-  const records = useGet<QueryList<MasterDataRecord>>("master-data", "/master-data", session);
-  const [notice, setNotice] = useState("");
-  const create = useMutation({
-    mutationFn: (body: unknown) => api("/master-data", { method: "POST", body: JSON.stringify(body) }),
-    onSuccess: () => { setNotice("Data induk tersimpan."); void client.invalidateQueries({ queryKey: protectedQueryPrefix("master-data") }); },
-    onError: (cause) => setNotice(err(cause)),
-  });
-  const setActive = useMutation({
-    mutationFn: ({ record, active }: { record: MasterDataRecord; active: boolean }) => api(`/master-data/${record.id}/active`, { method: "PATCH", body: JSON.stringify({ active }) }),
-    onSuccess: () => { setNotice("Status data diperbarui."); void client.invalidateQueries({ queryKey: protectedQueryPrefix("master-data") }); },
-    onError: (cause) => setNotice(err(cause)),
-  });
-  const list = records.data?.data ?? [];
-  return <Page title="Master Data" subtitle="Identitas siswa, guru, dan pegawai dipisahkan dari akun pengguna dan anggota koperasi.">
-    <div className="grid-two wide-left"><Card><div className="card-heading"><div><h2>Direktori identitas</h2><p>Anggota koperasi hanya dapat berasal dari guru atau pegawai; siswa tidak dapat didaftarkan sebagai anggota.</p></div><UsersRound size={20}/></div>
-      <Load loading={records.isLoading}>{list.length ? <div className="list">{list.map((record) => <div className="list-row" key={record.id}><div><strong>{record.fullName}</strong><small>{record.type.replaceAll("_", " ")} · {record.identifier}{record.department ? ` · ${record.department}` : record.className ? ` · ${record.className}` : ""}</small></div><div><span className={`status ${record.active ? "" : "danger-badge"}`}>{record.active ? "AKTIF" : "NONAKTIF"}</span><button className="text-button" disabled={setActive.isPending} onClick={() => setActive.mutate({ record, active: !record.active })}>{record.active ? "Nonaktifkan" : "Aktifkan"}</button></div></div>)}</div> : <Empty label="Belum ada data induk." />}</Load>
-    </Card><Card><h2>Tambah identitas</h2><form className="stack-form" onSubmit={(event) => { event.preventDefault(); const f = new FormData(event.currentTarget); const type = formValue(f, "type"); create.mutate({ type, identifier: formValue(f, "identifier"), fullName: formValue(f, "fullName"), barcode: formValue(f, "barcode") || undefined, className: type === "STUDENT" ? formValue(f, "className") || undefined : undefined, department: type !== "STUDENT" ? formValue(f, "department") || undefined : undefined, position: type !== "STUDENT" ? formValue(f, "position") || undefined : undefined, dataSource: "MANUAL" }); event.currentTarget.reset(); }}><select name="type" defaultValue="STUDENT"><option value="STUDENT">Siswa</option><option value="TEACHER">Guru</option><option value="EMPLOYEE">Pegawai</option></select><input name="identifier" required minLength={2} placeholder="NIS / NIP / ID pegawai"/><input name="fullName" required minLength={2} placeholder="Nama lengkap"/><input name="barcode" placeholder="Barcode kartu (opsional)"/><input name="className" placeholder="Kelas untuk siswa (opsional)"/><input name="department" placeholder="Unit / departemen (opsional)"/><input name="position" placeholder="Jabatan (opsional)"/><button className="primary" disabled={create.isPending}>{create.isPending ? "Menyimpan…" : "Simpan data induk"}</button></form>{notice && <Message>{notice}</Message>}</Card></div>
-  </Page>;
-}
+export { MasterDataPage } from "./master-data-page";
+
 export function PosPage({ session }: { session: Session }) {
   const client = useQueryClient(); const products = useGet<QueryList<Product>>("products", "/products", session);
   const [cart, setCart] = useState<Record<string, number>>({}); const [notice, setNotice] = useState("");

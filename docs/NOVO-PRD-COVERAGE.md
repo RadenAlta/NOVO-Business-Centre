@@ -1,42 +1,19 @@
-# NOVO PRD Coverage — Sprint 02 Authentication & Security
+# NOVO PRD Coverage — Sprint 03 code-review corrections
 
-This document records the code and test surfaces completed on `codex/sprint-02-auth-security`. It does **not** declare production readiness, user acceptance, or completed requirements. The authoritative 86-row status is [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+Scope: PR #3 corrections through baseline `28fa14a`, plus uncommitted HIGH-06/HIGH-07 hardening. The authoritative 86-row status remains [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md); no requirement is promoted to `verified` by source review alone.
 
-## Source surfaces inspected
+## Revised acceptance matrix
 
-| NOVO area | Sprint 02 source evidence | Audit status |
-| --- | --- | --- |
-| Authentication, tenants and roles | PostgreSQL `UserSession` migrations; opaque SHA-256-hashed session, revocation, current-user role lookup, tenant-match middleware, and stable concurrent `/me` CSRF issuance. | partial |
-| Browser session security | HttpOnly cookie-only authentication; no browser bearer/session storage; stable memory-only CSRF, trusted-origin checks, per-principal query cache isolation/eviction, and retryable failed logout. | partial |
-| Master data and cooperative membership | Existing Prisma models/routes; integration suite uses master-data mutation as a secured tenant/RBAC negative path. | partial |
-| Store/POS and inventory | Product, stock and sale schema/routes/screens, including transactional sale source. | partial |
-| Shuttle | Subscription, invoice, payment and settlement schema/routes/screens. | partial |
-| Catering | Catering order routes/screens. | partial |
-| Funding | Savings-account and append-only ledger source. | partial |
-| Financing and purchasing extension | Financing/receivable source and separately named purchasing extension. | partial |
-| Attachments and audit | Signature/hash validation and tenant-scoped download source; integration suite defines authenticated multipart upload. | partial |
-| Reporting and dashboard | Web reporting surface plus Streamlit dashboard/CSV workflow. | partial |
-| ML, generative AI and RAG | FastAPI service, original TF-IDF models, model comparison/evaluation and optional RAG/provider paths. | partial |
-| SIMS sync, backup/restore | No qualifying adapter/drill was observed. | not-started |
+| Requirement | Acceptance criterion | Correction/evidence | Status |
+| --- | --- | --- | --- |
+| FR-003 Master Data | Student/teacher/employee CRUD, normalized uniqueness, tenant/RBAC boundary, search/paging, and non-destructive delete policy | New eligible-member API prevents a student-heavy directory from hiding teachers. SIMS activation is server-owned. Delete is documented soft deactivation to preserve history. | partial; baseline CI passed at `28fa14a`; hardening CI pending |
+| FR-004 Secure Excel Import | No accidental demo import; exact template; reject unsafe archive/cell content; user/tenant/expiry preview; atomic one-use commit | Examples only live in Instructions. Actual ZIP expansion is bounded before ExcelJS, all relationship files including package root are SAX-parsed, decoded `TargetMode=External` is rejected, and all-sheet cell policy rejects formulas/external links. Local parser cases cover the policy; hosted CI for this hardening is pending. | partial; CI pending |
+| FR-005 Membership | Active same-tenant teacher/employee only, duplicate/student/inactive/foreign denial, lifecycle, audit and history | Create/status/audit are a single transaction. Trigger-based PostgreSQL tests prove rollback on audit failure. | partial; baseline CI passed at `28fa14a`; hardening CI pending |
 
-## Requirements retained from the PRDs
+## Retained product boundary
 
-The original NOVO modules—Store, Shuttle, Catering, Funding, Financing, master data, membership, reporting, SIMS sync and backup—remain intact. Purchasing is still an extension, not a replacement. All 14 functional, 10 non-functional, 20 Main Quest and 42 Side Quest entries remain tracked in the implementation-status and quest-traceability documents.
+Store/POS, Shuttle, Catering, Funding, Financing, Master Data, Membership, Reporting, SIMS and Backup remain tracked. Purchasing remains an extension. All 14 FR, 10 NFR, 20 Main Quest and 42 Side Quest rows remain in the roadmap.
 
-## Sprint 02 integration coverage designed
+## Verification limit
 
-`apps/api/src/security.integration.test.ts` is designed to run only against a disposable `novo_ci` or `novo_test` PostgreSQL database. It covers:
-
-- first-workspace bootstrap, cookie flags, no token JSON response and hash-only session persistence;
-- cookie `/me` restoration, stable overlapping-CSRF responses, logout revocation, and replay rejection;
-- bearer-only, altered-cookie and expired-session rejection;
-- missing/invalid CSRF, foreign origin, valid mutation and multipart attachment upload;
-- cross-tenant read/write denial, role change after login, and inactive account rejection.
-
-The CI API/Web job provisions PostgreSQL 16, applies committed Prisma migrations, and runs build, all workspace Vitest suites, and lint. At PR head `91b0a23`, GitHub CLI reported both API/Web checks and both ML checks successful (4/4; push run `40196407790`, PR run `40196411378`). This verifies the CI-executed scenarios, not every end-to-end NOVO function or deployment configuration.
-
-## Verification limits and remaining gaps
-
-- Local pnpm/Prisma/test/lint commands are blocked by the workspace sandbox's project-store symlink `EPERM`; Docker/PostgreSQL are unavailable here.
-- No browser E2E, deployment, production backup/restore, SIMS-unavailability, accessibility, performance, or external-channel test has been observed.
-- The CSRF/origin/session controls, per-principal client cache isolation, and retryable logout UX are source-implemented but not security certification. Confirm PR checks, deployment TLS/CORS configuration, object-storage malware scanning, and a production threat review before release.
+The baseline correction code has owner-reported 4/4 hosted CI evidence at `28fa14a`. HIGH-06/HIGH-07 have local API type-check and parser-test evidence only; PostgreSQL integration, migration deployment, full build/lint and CI remain pending the hardening commit. Browser E2E, deployment, performance, backup/restore and real-data retention compliance remain outside this audit.

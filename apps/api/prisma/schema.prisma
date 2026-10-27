@@ -86,6 +86,7 @@ model Tenant {
   users                 User[]
   members               CooperativeMember[]
   masterDataRecords     MasterDataRecord[]
+  masterDataImportPreviews MasterDataImportPreview[]
   products              Product[]
   stockMovements        StockMovement[]
   sales                 Sale[]
@@ -122,6 +123,7 @@ model User {
   audits       AuditLog[]          @relation("ActorAudits")
   attachments  Attachment[]        @relation("UploaderAttachments")
   sessions     UserSession[]
+  masterDataImportPreviews MasterDataImportPreview[] @relation("MasterDataImportPreviewCreator")
   @@unique([tenantId, email])
   @@index([tenantId, role])
 }
@@ -189,6 +191,21 @@ model MasterDataRecord {
   @@unique([tenantId, type, identifier])
   @@index([tenantId, type, active, fullName])
   @@index([tenantId, externalSimsId])
+}
+model MasterDataImportPreview {
+  id          String   @id @default(cuid())
+  tenantId    String
+  createdById String
+  fingerprint String
+  payload     Json
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  createdAt   DateTime @default(now())
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   User     @relation("MasterDataImportPreviewCreator", fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdById, expiresAt])
+  @@index([expiresAt])
 }
 model Product {
   id           String          @id @default(cuid())
