@@ -618,3 +618,104 @@ describe("Sprint 04 adjustment audit rollback", () => {
     expect(audits[0]).toMatchObject({ tenantId: account.tenantId, actorId: account.userId, action: "adjust_stock", entityType: "Product", entityId: product.body.id });
   });
 });
+
+
+describe("Sprint 04 product HPP authorization", () => {
+  it("redacts catalog HPP for non-HPP roles while allowing permitted financial readers", async () => {
+    const owner = await createAccount("product-hpp-owner");
+    const other = await createAccount("product-hpp-other");
+    const cashier = await createTenantUser(owner, "product-hpp-cashier");
+    const analyst = await createTenantUser(owner, "product-hpp-analyst");
+    const finance = await createTenantUser(owner, "product-hpp-finance");
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "CASHIER" } });
+    await prisma.user.update({ where: { id: analyst.userId }, data: { role: "ANALYST" } });
+    await prisma.user.update({ where: { id: finance.userId }, data: { role: "FINANCE_OFFICER" } });
+
+    const ownerAgent = request.agent(app);
+    const cashierAgent = request.agent(app);
+    const analystAgent = request.agent(app);
+    const financeAgent = request.agent(app);
+    const otherAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    await login(cashierAgent, cashier);
+    await login(analystAgent, analyst);
+    await login(financeAgent, finance);
+    await login(otherAgent, other);
+    const product = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerLogin.body.csrfToken as string).send({ sku: "HPPREAD-01", name: "HPP Read Policy", unitPrice: 10000, unitCost: 4000, initialStock: 3 }).expect(201);
+    expect(product.body.unitCost).toBe(4000);
+
+    const cashierCatalog = await cashierAgent.get("/api/v1/products").expect(200);
+    const cashierProduct = cashierCatalog.body.data.find((item: { id: string }) => item.id === product.body.id);
+    expect(cashierProduct).toBeDefined();
+    expect(cashierProduct).not.toHaveProperty("unitCost");
+    expect(JSON.stringify(cashierProduct)).not.toContain("unitCost");
+
+    const analystCatalog = await analystAgent.get("/api/v1/products").expect(200);
+    const analystProduct = analystCatalog.body.data.find((item: { id: string }) => item.id === product.body.id);
+    expect(analystProduct).not.toHaveProperty("unitCost");
+
+    const financeCatalog = await financeAgent.get("/api/v1/products").expect(200);
+    const financeProduct = financeCatalog.body.data.find((item: { id: string }) => item.id === product.body.id);
+    expect(financeProduct.unitCost).toBe(4000);
+
+    const otherCatalog = await otherAgent.get("/api/v1/products").expect(200);
+    expect(otherCatalog.body.data.some((item: { id: string }) => item.id === product.body.id)).toBe(false);
+  });
+
+  it("rejects non-HPP manager cost writes without changing persisted HPP", async () => {
+    const owner = await createAccount("product-hpp-manager-owner");
+    const manager = await createTenantUser(owner, "product-hpp-manager");
+    await prisma.user.update({ where: { id: manager.userId }, data: { role: "BUSINESS_DEVELOPMENT" } });
+    const ownerAgent = request.agent(app);
+    const managerAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    const managerLogin = await login(managerAgent, manager);
+    const ownerCsrf = ownerLogin.body.csrfToken as string;
+    const managerCsrf = managerLogin.body.csrfToken as string;
+    const protectedProduct = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPPMGR-01", name: "Protected HPP", unitPrice: 10000, unitCost: 4000 }).expect(201);
+
+    await managerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ sku: "HPPMGR-02", name: "Rejected HPP", unitPrice: 10000, unitCost: 2500 }).expect(403);
+    expect(await prisma.product.count({ where: { tenantId: owner.tenantId } })).toBe(1);
+
+    const managed = await managerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ sku: "HPPMGR-03", name: "Managed Without HPP", unitPrice: 10000, initialStock: 1 }).expect(201);
+    expect(managed.body).not.toHaveProperty("unitCost");
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: managed.body.id } })).unitCost).toBeNull();
+
+    await managerAgent.post("/api/v1/products/" + protectedProduct.body.id + "/receipts").set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ quantity: 1, reference: "HPP-MGR", unitCost: 2500 }).expect(403);
+    const afterRejectedReceipt = await prisma.product.findUniqueOrThrow({ where: { id: protectedProduct.body.id } });
+    expect(afterRejectedReceipt.unitCost?.toString()).toBe("4000");
+    expect(afterRejectedReceipt.stockOnHand).toBe(0);
+
+    await managerAgent.patch("/api/v1/products/" + protectedProduct.body.id).set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ unitCost: 2500 }).expect(403);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: protectedProduct.body.id } })).unitCost?.toString()).toBe("4000");
+
+    const safePatch = await managerAgent.patch("/api/v1/products/" + protectedProduct.body.id).set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ name: "Managed Metadata Change" }).expect(200);
+    expect(safePatch.body).not.toHaveProperty("unitCost");
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: protectedProduct.body.id } })).unitCost?.toString()).toBe("4000");
+  });
+
+  it("allows a product-managing HPP role to update HPP while cashier sales and receipts stay redacted", async () => {
+    const owner = await createAccount("product-hpp-authorized");
+    const cashier = await createTenantUser(owner, "product-hpp-authorized-cashier");
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "CASHIER" } });
+    const ownerAgent = request.agent(app);
+    const cashierAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    const cashierLogin = await login(cashierAgent, cashier);
+    const ownerCsrf = ownerLogin.body.csrfToken as string;
+    const cashierCsrf = cashierLogin.body.csrfToken as string;
+    const product = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPPAUTH-01", name: "Authorized HPP", unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(201);
+    const updated = await ownerAgent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ unitCost: 4500 }).expect(200);
+    expect(updated.body.unitCost).toBe(4500);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).unitCost?.toString()).toBe("4500");
+    await ownerAgent.post("/api/v1/products/" + product.body.id + "/receipts").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ quantity: 1, reference: "HPP-AUTH", unitCost: 5000 }).expect(201);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).unitCost?.toString()).toBe("5000");
+
+    const sale = await cashierAgent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", cashierCsrf).set("Idempotency-Key", "hpp-authorized-sale-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+    expect(JSON.stringify(sale.body)).not.toContain("unitCost");
+    expect(JSON.stringify(sale.body)).not.toContain("grossMargin");
+    const receipt = await cashierAgent.get("/api/v1/sales/" + sale.body.id + "/receipt").expect(200);
+    expect(JSON.stringify(receipt.body)).not.toContain("unitCost");
+    expect(JSON.stringify(receipt.body)).not.toContain("grossMargin");
+  });
+});

@@ -380,6 +380,8 @@ api.patch("/members/:id/active", requireRoles(...adminRoles), asyncRoute(async (
 }));
 const storeReadRoles: UserRole[] = ["OWNER", "ADMIN", "CASHIER", "FINANCE_OFFICER", "ANALYST", "SUPER_ADMIN", "CHAIRMAN", "TREASURER", "BUSINESS_DEVELOPMENT", "ADMIN_STAFF", "AUDITOR"];
 const storeManageRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "BUSINESS_DEVELOPMENT", "ADMIN_STAFF"];
+const storeHppRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "FINANCE_OFFICER", "TREASURER", "AUDITOR"];
+const canManageStoreHpp = (role: UserRole) => storeManageRoles.includes(role) && storeHppRoles.includes(role);
 const storeCategoryInput = z.object({ name: z.string().trim().min(2).max(120), description: z.string().trim().max(500).nullable().optional(), active: z.boolean().optional() }).strict();
 const storeCategoryQuery = z.object({ q: z.string().trim().max(120).optional(), active: z.enum(["true", "false"]).optional(), page: z.coerce.number().int().min(1).max(10000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).strict();
 const storePage = (page: number, pageSize: number, total: number) => ({ page, pageSize, total, pageCount: Math.ceil(total / pageSize) });
@@ -395,17 +397,83 @@ api.patch("/product-categories/:id", requireRoles(...storeManageRoles), asyncRou
 }));
 
 const storeProductQuery = z.object({ q: z.string().trim().max(120).optional(), categoryId: id.optional(), active: z.enum(["true", "false"]).optional(), lowStock: z.enum(["true"]).optional(), page: z.coerce.number().int().min(1).max(10000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).strict();
+const storeProductInclude = { category: { select: { id: true, name: true, active: true } } } satisfies Prisma.ProductInclude;
+type StoreProductPayload = Prisma.ProductGetPayload<{ include: typeof storeProductInclude }>;
+function storeProductResponse(product: StoreProductPayload, includeHpp: boolean) {
+  return {
+    id: product.id,
+    sku: product.sku,
+    name: product.name,
+    description: product.description,
+    categoryId: product.categoryId,
+    category: product.category,
+    unitPrice: asNumber(product.unitPrice),
+    stockOnHand: product.stockOnHand,
+    stock: product.stockOnHand,
+    reorderLevel: product.reorderLevel,
+    active: product.active,
+    createdAt: product.createdAt,
+    updatedAt: product.updatedAt,
+    lowStock: product.stockOnHand <= product.reorderLevel,
+    ...(includeHpp ? { unitCost: product.unitCost === null ? null : asNumber(product.unitCost) } : {}),
+  };
+}
 api.get("/products", requireRoles(...storeReadRoles), asyncRoute(async (request, response) => {
-  const query = storeProductQuery.parse(request.query); const where = { tenantId: me(request).tenantId, ...(query.categoryId ? { categoryId: query.categoryId } : {}), ...(query.active ? { active: query.active === "true" } : {}), ...(query.q ? { OR: [{ sku: { contains: query.q, mode: "insensitive" as const } }, { name: { contains: query.q, mode: "insensitive" as const } }] } : {}) };
-  const rows = await prisma.product.findMany({ where, include: { category: { select: { id: true, name: true, active: true } } }, orderBy: [{ name: "asc" }, { id: "asc" }] }); const filtered = query.lowStock ? rows.filter((product) => product.stockOnHand <= product.reorderLevel) : rows; const data = filtered.slice((query.page - 1) * query.pageSize, query.page * query.pageSize).map((product) => ({ ...decimalJson(product), stock: product.stockOnHand, lowStock: product.stockOnHand <= product.reorderLevel })); response.json({ data, pagination: storePage(query.page, query.pageSize, filtered.length) });
+  const query = storeProductQuery.parse(request.query);
+  const actor = me(request);
+  const where = { tenantId: actor.tenantId, ...(query.categoryId ? { categoryId: query.categoryId } : {}), ...(query.active ? { active: query.active === "true" } : {}), ...(query.q ? { OR: [{ sku: { contains: query.q, mode: "insensitive" as const } }, { name: { contains: query.q, mode: "insensitive" as const } }] } : {}) };
+  const rows = await prisma.product.findMany({ where, include: storeProductInclude, orderBy: [{ name: "asc" }, { id: "asc" }] });
+  const filtered = query.lowStock ? rows.filter((product) => product.stockOnHand <= product.reorderLevel) : rows;
+  const data = filtered.slice((query.page - 1) * query.pageSize, query.page * query.pageSize).map((product) => storeProductResponse(product, storeHppRoles.includes(actor.role)));
+  response.json({ data, pagination: storePage(query.page, query.pageSize, filtered.length) });
 }));
 
 const storeProductInput = z.object({ sku: z.string().trim().min(2).max(50), name: z.string().trim().min(2).max(160), description: z.string().trim().max(1000).nullable().optional(), categoryId: id.nullable().optional(), unitPrice: money.positive(), unitCost: money.nullable().optional(), reorderLevel: z.coerce.number().int().min(0).max(1000000).default(0), initialStock: z.coerce.number().int().min(0).max(1000000).default(0), active: z.boolean().optional() }).strict();
 const storeProductPatch = storeProductInput.omit({ initialStock: true }).partial().refine((value) => Object.keys(value).length > 0);
 async function storeCategoryId(tx: Prisma.TransactionClient, tenantId: string, categoryId: string | null | undefined): Promise<string | null | undefined> { if (categoryId === undefined || categoryId === null) return categoryId; const category = await tx.productCategory.findFirst({ where: { id: categoryId, tenantId, active: true }, select: { id: true } }); if (!category) throw new HttpError(400, "INVALID_CATEGORY", "Category must be active and belong to this workspace."); return category.id; }
-api.post("/products", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => { const input = storeProductInput.parse(request.body); const actor = me(request); const product = await serializableStore(async (tx) => { const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId); const created = await tx.product.create({ data: { tenantId: actor.tenantId, sku: input.sku.toUpperCase(), name: input.name, description: input.description ?? null, categoryId: categoryId ?? null, unitPrice: new Prisma.Decimal(input.unitPrice), unitCost: input.unitCost === undefined || input.unitCost === null ? null : new Prisma.Decimal(input.unitCost), reorderLevel: input.reorderLevel, stockOnHand: input.initialStock, active: input.active ?? true } }); if (input.initialStock) await tx.stockMovement.create({ data: { tenantId: actor.tenantId, productId: created.id, quantity: input.initialStock, reason: "INITIAL_STOCK", reference: makeReference("STK"), balanceAfter: input.initialStock, performedById: actor.id } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "Product", entityId: created.id, after: { sku: created.sku, initialStock: input.initialStock } } }); return created; }); response.status(201).json(decimalJson(product)); }));
-api.patch("/products/:id", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => { const productId = id.parse(request.params.id); const input = storeProductPatch.parse(request.body); const actor = me(request); const product = await serializableStore(async (tx) => { const current = await tx.product.findFirst({ where: { id: productId, tenantId: actor.tenantId } }); if (!current) throw new HttpError(404, "NOT_FOUND", "Product not found."); const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId); const updated = await tx.product.update({ where: { id: current.id }, data: { ...(input.sku === undefined ? {} : { sku: input.sku.toUpperCase() }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.description === undefined ? {} : { description: input.description }), ...(categoryId === undefined ? {} : { categoryId }), ...(input.unitPrice === undefined ? {} : { unitPrice: new Prisma.Decimal(input.unitPrice) }), ...(input.unitCost === undefined ? {} : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }), ...(input.reorderLevel === undefined ? {} : { reorderLevel: input.reorderLevel }), ...(input.active === undefined ? {} : { active: input.active }) } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "update", entityType: "Product", entityId: updated.id, after: { sku: updated.sku, active: updated.active } } }); return updated; }); response.json(decimalJson(product)); }));
-api.post("/products/:id/receipts", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => { const productId=id.parse(request.params.id); const input=z.object({ quantity:z.coerce.number().int().positive().max(1000000), reference:z.string().trim().min(3).max(80).optional(), unitCost:money.nullable().optional() }).strict().parse(request.body); const actor=me(request); const movement=await serializableStore(async(tx)=>{ const product=await tx.product.findFirst({where:{id:productId,tenantId:actor.tenantId}}); if(!product)throw new HttpError(404,"NOT_FOUND","Product not found."); const updated=await tx.product.update({where:{id:product.id},data:{stockOnHand:{increment:input.quantity},...(input.unitCost===undefined?{}:{unitCost:input.unitCost===null?null:new Prisma.Decimal(input.unitCost)})},select:{stockOnHand:true}}); const created=await tx.stockMovement.create({data:{tenantId:actor.tenantId,productId:product.id,quantity:input.quantity,reason:"STOCK_RECEIPT",reference:input.reference??makeReference("RCV"),balanceAfter:updated.stockOnHand,performedById:actor.id}}); await tx.auditLog.create({data:{tenantId:actor.tenantId,actorId:actor.id,action:"receive_stock",entityType:"Product",entityId:product.id,after:{movementId:created.id,quantity:input.quantity,balanceAfter:updated.stockOnHand}}});return created;});response.status(201).json(movement);}));
+api.post("/products", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const input = storeProductInput.parse(request.body);
+  const actor = me(request);
+  if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot set product HPP.");
+  const product = await serializableStore(async (tx) => {
+    const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId);
+    const created = await tx.product.create({ data: { tenantId: actor.tenantId, sku: input.sku.toUpperCase(), name: input.name, description: input.description ?? null, categoryId: categoryId ?? null, unitPrice: new Prisma.Decimal(input.unitPrice), unitCost: input.unitCost === undefined || input.unitCost === null ? null : new Prisma.Decimal(input.unitCost), reorderLevel: input.reorderLevel, stockOnHand: input.initialStock, active: input.active ?? true }, include: storeProductInclude });
+    if (input.initialStock) await tx.stockMovement.create({ data: { tenantId: actor.tenantId, productId: created.id, quantity: input.initialStock, reason: "INITIAL_STOCK", reference: makeReference("STK"), balanceAfter: input.initialStock, performedById: actor.id } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "Product", entityId: created.id, after: { sku: created.sku, initialStock: input.initialStock } } });
+    return created;
+  });
+  response.status(201).json(storeProductResponse(product, storeHppRoles.includes(actor.role)));
+}));
+api.patch("/products/:id", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const productId = id.parse(request.params.id);
+  const input = storeProductPatch.parse(request.body);
+  const actor = me(request);
+  if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot change product HPP.");
+  const product = await serializableStore(async (tx) => {
+    const current = await tx.product.findFirst({ where: { id: productId, tenantId: actor.tenantId } });
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Product not found.");
+    const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId);
+    const updated = await tx.product.update({ where: { id: current.id }, data: { ...(input.sku === undefined ? {} : { sku: input.sku.toUpperCase() }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.description === undefined ? {} : { description: input.description }), ...(categoryId === undefined ? {} : { categoryId }), ...(input.unitPrice === undefined ? {} : { unitPrice: new Prisma.Decimal(input.unitPrice) }), ...(input.unitCost === undefined ? {} : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }), ...(input.reorderLevel === undefined ? {} : { reorderLevel: input.reorderLevel }), ...(input.active === undefined ? {} : { active: input.active }) }, include: storeProductInclude });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "update", entityType: "Product", entityId: updated.id, after: { sku: updated.sku, active: updated.active } } });
+    return updated;
+  });
+  response.json(storeProductResponse(product, storeHppRoles.includes(actor.role)));
+}));
+api.post("/products/:id/receipts", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const productId = id.parse(request.params.id);
+  const input = z.object({ quantity: z.coerce.number().int().positive().max(1000000), reference: z.string().trim().min(3).max(80).optional(), unitCost: money.nullable().optional() }).strict().parse(request.body);
+  const actor = me(request);
+  if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot change product HPP.");
+  const movement = await serializableStore(async (tx) => {
+    const product = await tx.product.findFirst({ where: { id: productId, tenantId: actor.tenantId } });
+    if (!product) throw new HttpError(404, "NOT_FOUND", "Product not found.");
+    const updated = await tx.product.update({ where: { id: product.id }, data: { stockOnHand: { increment: input.quantity }, ...(input.unitCost === undefined ? {} : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }) }, select: { stockOnHand: true } });
+    const created = await tx.stockMovement.create({ data: { tenantId: actor.tenantId, productId: product.id, quantity: input.quantity, reason: "STOCK_RECEIPT", reference: input.reference ?? makeReference("RCV"), balanceAfter: updated.stockOnHand, performedById: actor.id } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "receive_stock", entityType: "Product", entityId: product.id, after: { movementId: created.id, quantity: input.quantity, balanceAfter: updated.stockOnHand } } });
+    return created;
+  });
+  response.status(201).json(movement);
+}));
 api.post("/products/:id/adjustments", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
   const productId = id.parse(request.params.id);
   const input = z.object({ quantity: z.coerce.number().int().min(-1_000_000).max(1_000_000).refine((value) => value !== 0, "Quantity cannot be zero."), reason: z.string().trim().min(3).max(160), reference: z.string().trim().min(3).max(80).optional() }).strict().parse(request.body);
@@ -438,7 +506,6 @@ const storeCheckoutInput = z.object({ paymentMethod: z.enum(["CASH", "TRANSFER",
   if (input.paymentMethod !== "CASH" && !input.paymentReference) context.addIssue({ code: "custom", path: ["paymentReference"], message: "A transfer or QRIS reference is required." });
 });
 const storeSaleInclude = { items: { include: { product: { select: { sku: true, name: true } } } }, payment: true, cashier: { select: { name: true } } } satisfies Prisma.SaleInclude;
-const storeHppRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "FINANCE_OFFICER", "TREASURER", "AUDITOR"];
 type StoreSalePayload = Prisma.SaleGetPayload<{ include: typeof storeSaleInclude }>;
 function storeSaleResponse(sale: StoreSalePayload, includeHpp: boolean) { const base={id:sale.id,receiptNo:sale.receiptNo,status:sale.status,paymentMethod:sale.paymentMethod,total:asNumber(sale.total),occurredAt:sale.occurredAt,voidReason:sale.voidReason,voidedAt:sale.voidedAt,cashier:sale.cashier,payment:sale.payment===null?null:{method:sale.payment.method,status:sale.payment.status,amount:asNumber(sale.payment.amount),cashReceived:sale.payment.cashReceived===null?null:asNumber(sale.payment.cashReceived),changeGiven:sale.payment.changeGiven===null?null:asNumber(sale.payment.changeGiven),reference:sale.payment.reference,recordedAt:sale.payment.recordedAt}};const items=sale.items.map((item)=>({id:item.id,productId:item.productId,sku:item.productSku,name:item.productName,quantity:item.quantity,unitPrice:asNumber(item.unitPrice),subtotal:asNumber(item.subtotal),...(includeHpp?{unitCost:item.unitCost===null?null:asNumber(item.unitCost),costSubtotal:item.costSubtotal===null?null:asNumber(item.costSubtotal),grossMargin:item.grossMargin===null?null:asNumber(item.grossMargin)}:{})}));return {...base,items,...(includeHpp?{totalCost:sale.totalCost===null?null:asNumber(sale.totalCost),grossMargin:sale.grossMargin===null?null:asNumber(sale.grossMargin)}:{})}; }
 
