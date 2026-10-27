@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import ExcelJS from "exceljs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { Prisma } from "@prisma/client";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -717,5 +718,74 @@ describe("Sprint 04 product HPP authorization", () => {
     const receipt = await cashierAgent.get("/api/v1/sales/" + sale.body.id + "/receipt").expect(200);
     expect(JSON.stringify(receipt.body)).not.toContain("unitCost");
     expect(JSON.stringify(receipt.body)).not.toContain("grossMargin");
+  });
+});
+
+describe("Sprint 04 SKU database integrity", () => {
+  it("canonicalizes API SKU creates and updates, rejects conflicts without partial writes, and preserves sale snapshots", async () => {
+    const account = await createAccount("sku-api-integrity");
+    const agent = request.agent(app);
+    const loginResult = await login(agent, account);
+    const csrf = loginResult.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "abc-001", name: "Canonical API SKU", unitPrice: 10000, initialStock: 1 }).expect(201);
+    expect(product.body.sku).toBe("ABC-001");
+
+    await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "ABC-001", name: "Conflicting API SKU", unitPrice: 10000 }).expect(409);
+    expect(await prisma.product.count({ where: { tenantId: account.tenantId } })).toBe(1);
+
+    const second = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "second-003", name: "Second Canonical SKU", unitPrice: 10000 }).expect(201);
+    expect(second.body.sku).toBe("SECOND-003");
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "second-003" }).expect(409);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).sku).toBe("ABC-001");
+
+    const sale = await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", "sku-integrity-sale-01")
+      .send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "next-002" }).expect(200).then((response) => expect(response.body.sku).toBe("NEXT-002"));
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "not a valid sku" }).expect(400);
+
+    const persisted = await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } });
+    const snapshot = await prisma.saleItem.findFirstOrThrow({ where: { saleId: sale.body.id } });
+    expect(persisted.sku).toBe("NEXT-002");
+    expect(snapshot.productSku).toBe("ABC-001");
+  });
+
+  it("enforces canonical SKU integrity on direct PostgreSQL writes while permitting the same SKU in another tenant", async () => {
+    const account = await createAccount("sku-direct-integrity");
+    const other = await createAccount("sku-direct-integrity-other");
+    const agent = request.agent(app);
+    const otherAgent = request.agent(app);
+    const loginResult = await login(agent, account);
+    const otherLogin = await login(otherAgent, other);
+    const csrf = loginResult.body.csrfToken as string;
+    const otherCsrf = otherLogin.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "db-case-001", name: "Database Canonical SKU", unitPrice: 10000 }).expect(201);
+    expect(product.body.sku).toBe("DB-CASE-001");
+
+    const now = new Date();
+    await expect(prisma.$executeRaw`
+      INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
+      VALUES (${"sku-direct-lowercase"}, ${account.tenantId}, ${"db-case-001"}, ${"Direct lowercase bypass"}, ${new Prisma.Decimal(10000)}, ${0}, ${0}, ${true}, ${now}, ${now})
+    `).rejects.toThrow();
+    await expect(prisma.$executeRaw`
+      INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
+      VALUES (${"sku-direct-duplicate"}, ${account.tenantId}, ${"DB-CASE-001"}, ${"Direct duplicate bypass"}, ${new Prisma.Decimal(10000)}, ${0}, ${0}, ${true}, ${now}, ${now})
+    `).rejects.toThrow();
+    expect(await prisma.product.count({ where: { tenantId: account.tenantId, sku: "DB-CASE-001" } })).toBe(1);
+
+    const otherProduct = await otherAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", otherCsrf)
+      .send({ sku: "db-case-001", name: "Other Tenant SKU", unitPrice: 15000 }).expect(201);
+    expect(otherProduct.body.sku).toBe("DB-CASE-001");
+    expect(await prisma.product.count({ where: { sku: "DB-CASE-001" } })).toBe(2);
   });
 });

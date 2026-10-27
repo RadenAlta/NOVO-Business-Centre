@@ -32,6 +32,9 @@ Errors share this shape:
 | Purchasing | `GET/POST /purchasing/requests` | Explicit procurement extension |
 | AI/Data | `GET /dashboard`, `POST /analytics/demand-forecast`, `GET/POST /knowledge-documents`, `POST /ai/assist`, `POST /assistant/chat` | Dashboard data, protected ML demand forecast, RAG context, provider-backed GenAI, ML-service RAG |
 | Governance | `POST /attachments`, `GET /attachments/:id/download`, `GET /audit-logs` | Signature-checked attachment upload, tenant-scoped download, and audit review |
+## Store SKU contract
+
+`POST /products` and `PATCH /products/:id` accept only 2–50 character ASCII SKU values matching `[A-Za-z0-9][A-Za-z0-9._/-]{1,49}` and return/store their uppercase canonical form. The tenant-scoped Product uniqueness boundary is also enforced by PostgreSQL; clients must not depend on preservation of SKU letter case.
 
 ## Model-service contract
 

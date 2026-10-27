@@ -1,3 +1,10 @@
+# Sprint 04 — CP4-D2 SKU integrity checkpoint
+
+- Branch: `codex/sprint-04-store-pos-inventory`; baseline independently reported by owner: `eb169c7` (CI 40491042299 success).
+- HIGH-01 remains CLOSED by the owner-reported re-audit. HIGH-02 is **code and migration pending verification**: a new, forward-only migration preflights invalid/colliding Product SKU records, canonicalizes only clean valid legacy ASCII values, and adds a database CHECK boundary. No legacy product is deleted, merged, suffixed, or silently selected as a winner.
+- `pnpm --filter @novo/api preflight:store-sku` is read-only and reports tenant ID, product ID and original SKU for invalid values/collisions. Production deployment must run it and manually resolve every finding before `prisma migrate deploy`.
+- Local PostgreSQL integration remains BLOCKED until a disposable `novo_test` database is available. The new migration and security/inventory regression cases require GitHub Actions PostgreSQL 16 before HIGH-02 may be closed.
+- FR-006 remains **partial**. MED-01 structured-preview retention purge remains **OPEN** and mandatory before production personal-data processing. All 86 requirement IDs, including 42 Side Quests, remain tracked; none is promoted by this checkpoint.
 # CODEX Handoff — Sprint 03 PR #3 final XLSX hardening
 
 ## Git state

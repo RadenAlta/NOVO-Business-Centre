@@ -1,3 +1,6 @@
+# Sprint 04 CP4-D2 — Store SKU integrity update
+
+FR-006 remains **partial**. HIGH-02 has a source-level remediation pending migration and PostgreSQL CI verification: Product SKU storage is canonical uppercase ASCII, with a tenant-scoped ordinary unique index retained and a database CHECK constraint that prevents API-bypassing lowercase/invalid writes. A read-only preflight reports manual-reconciliation candidates before migration. No requirement is promoted to `verified` by this change; MED-01 remains OPEN.
 # NOVO PRD Coverage — Sprint 03 code-review corrections
 
 Scope: PR #3 corrections through baseline `28fa14a`, plus uncommitted HIGH-06/HIGH-07 hardening. The authoritative 86-row status remains [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md); no requirement is promoted to `verified` by source review alone.

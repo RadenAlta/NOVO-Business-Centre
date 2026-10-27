@@ -15,6 +15,7 @@ import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, re
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
+import { normalizeStoreSku, storeSkuPattern } from "./store-sku.js";
 import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
@@ -428,7 +429,8 @@ api.get("/products", requireRoles(...storeReadRoles), asyncRoute(async (request,
   response.json({ data, pagination: storePage(query.page, query.pageSize, filtered.length) });
 }));
 
-const storeProductInput = z.object({ sku: z.string().trim().min(2).max(50), name: z.string().trim().min(2).max(160), description: z.string().trim().max(1000).nullable().optional(), categoryId: id.nullable().optional(), unitPrice: money.positive(), unitCost: money.nullable().optional(), reorderLevel: z.coerce.number().int().min(0).max(1000000).default(0), initialStock: z.coerce.number().int().min(0).max(1000000).default(0), active: z.boolean().optional() }).strict();
+const storeSkuInput = z.string().trim().regex(storeSkuPattern, "SKU must use 2–50 ASCII letters, digits, dots, underscores, slashes, or hyphens.").transform(normalizeStoreSku);
+const storeProductInput = z.object({ sku: storeSkuInput, name: z.string().trim().min(2).max(160), description: z.string().trim().max(1000).nullable().optional(), categoryId: id.nullable().optional(), unitPrice: money.positive(), unitCost: money.nullable().optional(), reorderLevel: z.coerce.number().int().min(0).max(1000000).default(0), initialStock: z.coerce.number().int().min(0).max(1000000).default(0), active: z.boolean().optional() }).strict();
 const storeProductPatch = storeProductInput.omit({ initialStock: true }).partial().refine((value) => Object.keys(value).length > 0);
 async function storeCategoryId(tx: Prisma.TransactionClient, tenantId: string, categoryId: string | null | undefined): Promise<string | null | undefined> { if (categoryId === undefined || categoryId === null) return categoryId; const category = await tx.productCategory.findFirst({ where: { id: categoryId, tenantId, active: true }, select: { id: true } }); if (!category) throw new HttpError(400, "INVALID_CATEGORY", "Category must be active and belong to this workspace."); return category.id; }
 api.post("/products", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
@@ -437,7 +439,7 @@ api.post("/products", requireRoles(...storeManageRoles), asyncRoute(async (reque
   if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot set product HPP.");
   const product = await serializableStore(async (tx) => {
     const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId);
-    const created = await tx.product.create({ data: { tenantId: actor.tenantId, sku: input.sku.toUpperCase(), name: input.name, description: input.description ?? null, categoryId: categoryId ?? null, unitPrice: new Prisma.Decimal(input.unitPrice), unitCost: input.unitCost === undefined || input.unitCost === null ? null : new Prisma.Decimal(input.unitCost), reorderLevel: input.reorderLevel, stockOnHand: input.initialStock, active: input.active ?? true }, include: storeProductInclude });
+    const created = await tx.product.create({ data: { tenantId: actor.tenantId, sku: input.sku, name: input.name, description: input.description ?? null, categoryId: categoryId ?? null, unitPrice: new Prisma.Decimal(input.unitPrice), unitCost: input.unitCost === undefined || input.unitCost === null ? null : new Prisma.Decimal(input.unitCost), reorderLevel: input.reorderLevel, stockOnHand: input.initialStock, active: input.active ?? true }, include: storeProductInclude });
     if (input.initialStock) await tx.stockMovement.create({ data: { tenantId: actor.tenantId, productId: created.id, quantity: input.initialStock, reason: "INITIAL_STOCK", reference: makeReference("STK"), balanceAfter: input.initialStock, performedById: actor.id } });
     await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "Product", entityId: created.id, after: { sku: created.sku, initialStock: input.initialStock } } });
     return created;
@@ -453,7 +455,7 @@ api.patch("/products/:id", requireRoles(...storeManageRoles), asyncRoute(async (
     const current = await tx.product.findFirst({ where: { id: productId, tenantId: actor.tenantId } });
     if (!current) throw new HttpError(404, "NOT_FOUND", "Product not found.");
     const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId);
-    const updated = await tx.product.update({ where: { id: current.id }, data: { ...(input.sku === undefined ? {} : { sku: input.sku.toUpperCase() }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.description === undefined ? {} : { description: input.description }), ...(categoryId === undefined ? {} : { categoryId }), ...(input.unitPrice === undefined ? {} : { unitPrice: new Prisma.Decimal(input.unitPrice) }), ...(input.unitCost === undefined ? {} : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }), ...(input.reorderLevel === undefined ? {} : { reorderLevel: input.reorderLevel }), ...(input.active === undefined ? {} : { active: input.active }) }, include: storeProductInclude });
+    const updated = await tx.product.update({ where: { id: current.id }, data: { ...(input.sku === undefined ? {} : { sku: input.sku }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.description === undefined ? {} : { description: input.description }), ...(categoryId === undefined ? {} : { categoryId }), ...(input.unitPrice === undefined ? {} : { unitPrice: new Prisma.Decimal(input.unitPrice) }), ...(input.unitCost === undefined ? {} : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }), ...(input.reorderLevel === undefined ? {} : { reorderLevel: input.reorderLevel }), ...(input.active === undefined ? {} : { active: input.active }) }, include: storeProductInclude });
     await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "update", entityType: "Product", entityId: updated.id, after: { sku: updated.sku, active: updated.active } } });
     return updated;
   });

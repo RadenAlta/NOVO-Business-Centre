@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "preflight:store-sku": "tsx prisma/preflight-store-sku-integrity.ts"
   },
   "dependencies": {
     "@novo/contracts": "workspace:*",

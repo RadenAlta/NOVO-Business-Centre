@@ -98,3 +98,7 @@ All 20 Main Quest and 42 Side Quest rows remain in scope. The correction set str
 ## Sprint 03 security-hardening note
 
 HIGH-06 and HIGH-07 change only the FR-004 import-security boundary. The 20 Main Quest and 42 Side Quest entries above remain tracked with their existing statuses; no quest is promoted to `verified` by the local parser tests. MED-01 scheduled preview-retention purge remains OPEN before production personal data.
+
+## Sprint 04 CP4-D2 traceability note
+
+The SKU-integrity change supports FR-006 and the existing full-stack persistence/security work. Its database migration, direct-write regression test and production preflight are pending PostgreSQL CI verification; this does not promote any Main Quest or Side Quest to `verified`. All 20 Main Quest and 42 Side Quest rows remain tracked. MED-01 remains OPEN before production personal-data use.

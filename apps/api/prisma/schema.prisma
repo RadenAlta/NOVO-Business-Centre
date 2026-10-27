@@ -235,6 +235,7 @@ model ProductCategory {
 model Product {
   id           String           @id @default(cuid())
   tenantId     String
+  // Canonical uppercase ASCII validation is a PostgreSQL CHECK in migration 202610280006. Prisma cannot model that constraint.
   sku          String
   name         String
   description  String?
