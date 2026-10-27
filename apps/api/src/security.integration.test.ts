@@ -35,6 +35,12 @@ function binaryResponseParser(response: request.Response, callback: (error: Erro
 }
 
 async function clearTestData(): Promise<void> {
+  await prisma.storePayment.deleteMany();
+  await prisma.stockMovement.deleteMany();
+  await prisma.saleItem.deleteMany();
+  await prisma.sale.deleteMany();
+  await prisma.product.deleteMany();
+  await prisma.productCategory.deleteMany();
   await prisma.savingsLedgerEntry.deleteMany();
   await prisma.savingsAccount.deleteMany();
   await prisma.cooperativeMember.deleteMany();
@@ -358,5 +364,59 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", formulaBuffer, { filename: "formula.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(400);
     await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", Buffer.from("not a workbook"), { filename: "bad.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(400);
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: simsPreview.body.previewId, fingerprint: "0".repeat(64) }).expect(409);
+  });
+});
+
+describe("Sprint 04 Store response security", () => {
+  it("enforces Store RBAC, tenant isolation, CSRF, category ownership, and HPP redaction", async () => {
+    const owner = await createAccount("store-security-owner");
+    const other = await createAccount("store-security-other");
+    const cashier = await createTenantUser(owner, "store-security-cashier");
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "CASHIER" } });
+    const ownerAgent = request.agent(app);
+    const otherAgent = request.agent(app);
+    const cashierAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    const otherLogin = await login(otherAgent, other);
+    const cashierLogin = await login(cashierAgent, cashier);
+    const ownerCsrf = ownerLogin.body.csrfToken as string;
+    const otherCsrf = otherLogin.body.csrfToken as string;
+    const cashierCsrf = cashierLogin.body.csrfToken as string;
+
+    await ownerAgent.post("/api/v1/product-categories").set("Origin", origin).send({ name: "No CSRF" }).expect(403);
+    const category = await ownerAgent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ name: "Synthetic Category" }).expect(201);
+    const foreignCategory = await otherAgent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ name: "Other Category" }).expect(201);
+    await cashierAgent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", cashierCsrf).send({ name: "Cashier Cannot Create" }).expect(403);
+    await otherAgent.patch("/api/v1/product-categories/" + category.body.id).set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ active: false }).expect(404);
+
+    await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPP-SEC-01", name: "Synthetic HPP Product", categoryId: foreignCategory.body.id, unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(400);
+    const product = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPP-SEC-01", name: "Synthetic HPP Product", categoryId: category.body.id, unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(201);
+    await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "hpp-sec-01", name: "Duplicate", unitPrice: 1 }).expect(409);
+    await otherAgent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ active: false }).expect(404);
+
+    const checkout = await cashierAgent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", cashierCsrf).set("Idempotency-Key", "store-security-checkout-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+    expect(checkout.body).not.toHaveProperty("totalCost");
+    expect(checkout.body).not.toHaveProperty("grossMargin");
+    expect(checkout.body.items[0]).not.toHaveProperty("unitCost");
+    expect(checkout.body.items[0]).not.toHaveProperty("costSubtotal");
+    expect(checkout.body.items[0]).not.toHaveProperty("grossMargin");
+    await otherAgent.get("/api/v1/sales/" + checkout.body.id).expect(404);
+    await otherAgent.get("/api/v1/sales/" + checkout.body.id + "/receipt").expect(404);
+
+    const cashierHistory = await cashierAgent.get("/api/v1/sales").expect(200);
+    expect(cashierHistory.body.data[0]).not.toHaveProperty("totalCost");
+    expect(cashierHistory.body.data[0].items[0]).not.toHaveProperty("unitCost");
+    const receipt = await cashierAgent.get("/api/v1/sales/" + checkout.body.id + "/receipt").expect(200);
+    expect(JSON.stringify(receipt.body)).not.toContain("unitCost");
+    expect(JSON.stringify(receipt.body)).not.toContain("grossMargin");
+
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "FINANCE_OFFICER" } });
+    const finance = await cashierAgent.get("/api/v1/sales/" + checkout.body.id).expect(200);
+    expect(finance.body.totalCost).toBe(4000);
+    expect(finance.body.grossMargin).toBe(6000);
+    expect(finance.body.items[0].unitCost).toBe(4000);
+    const financeReceipt = await cashierAgent.get("/api/v1/sales/" + checkout.body.id + "/receipt").expect(200);
+    expect(JSON.stringify(financeReceipt.body)).not.toContain("unitCost");
+    expect(JSON.stringify(financeReceipt.body)).not.toContain("grossMargin");
   });
 });
