@@ -506,3 +506,22 @@ describe("Sprint 04 Store atomic audit rollback", () => {
     const persisted = await prisma.sale.findUniqueOrThrow({ where: { id: sale.body.id } }); expect(persisted.status).toBe("COMPLETED"); expect(persisted.voidReason).toBeNull(); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(1); expect(await prisma.stockMovement.count({ where: { saleId: sale.body.id, reason: "POS_VOID" } })).toBe(0);
   });
 });
+
+
+describe("Sprint 04 StorePayment rollback isolation", () => {
+  it("rolls back checkout when StorePayment insertion fails", async () => {
+    const account = await createAccount("store-payment-failure"); const agent = request.agent(app); const signedIn = await login(agent, account); const csrf = signedIn.body.csrfToken as string;
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "PAYFAIL-01", name: "Payment Failure Product", unitPrice: 10000, initialStock: 1 }).expect(201);
+    const before = { sales: await prisma.sale.count({ where: { tenantId: account.tenantId } }), items: await prisma.saleItem.count(), payments: await prisma.storePayment.count({ where: { tenantId: account.tenantId } }), movements: await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } }), audits: await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "checkout" } }), stock: (await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand };
+    const functionName = "novo_fail_store_payment_fixture"; const triggerName = "novo_fail_store_payment_fixture_trigger";
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "StorePayment";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + functionName + '();');
+    try {
+      await prisma.$executeRawUnsafe("CREATE FUNCTION " + functionName + "() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''" + account.tenantId.replace(/'/g, "''") + "'' THEN RAISE EXCEPTION ''forced fixture StorePayment failure''; END IF; RETURN NEW; END;'");
+      await prisma.$executeRawUnsafe('CREATE TRIGGER ' + triggerName + ' BEFORE INSERT ON "StorePayment" FOR EACH ROW EXECUTE FUNCTION ' + functionName + '();');
+      await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "store-payment-failure-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(500);
+      expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(before.sales); expect(await prisma.saleItem.count()).toBe(before.items); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(before.payments); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(before.movements); expect(await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "checkout" } })).toBe(before.audits); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(before.stock);
+    } finally { await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "StorePayment";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + functionName + '();'); }
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "store-payment-success-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+    expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(1); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(1); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(1); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(0);
+  });
+});
