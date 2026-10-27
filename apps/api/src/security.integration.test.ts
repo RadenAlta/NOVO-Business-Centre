@@ -445,3 +445,37 @@ describe("Sprint 04 Product and inventory integrity", () => {
     expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).active).toBe(false);
   });
 });
+
+
+describe("Sprint 04 Store financial transaction integrity", () => {
+  it("prevents overselling, preserves financial snapshots, scopes idempotency, and reverses a sale exactly once", async () => {
+    const account = await createAccount("store-transaction"); const agent = request.agent(app);
+    const signedIn = await login(agent, account); const csrf = signedIn.body.csrfToken as string;
+    const category = await agent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ name: "Transactions" }).expect(201);
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "TX-001", name: "Transaction Product", categoryId: category.body.id, unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(201);
+    const item = [{ productId: product.body.id, quantity: 2 }];
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-cash-invalid").send({ paymentMethod: "CASH", cashReceived: 1, items: item, unitPrice: 1, total: 1, tenantId: "forged" }).expect(400);
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-transfer-invalid").send({ paymentMethod: "TRANSFER", items: item }).expect(400);
+    const first = agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-concurrent-a").send({ paymentMethod: "CASH", cashReceived: 20000, items: item });
+    const second = agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-concurrent-b").send({ paymentMethod: "CASH", cashReceived: 20000, items: item });
+    const attempts = await Promise.all([first, second]);
+    expect(attempts.map((result) => result.status).sort()).toEqual([201, 409]);
+    const accepted = attempts.find((result) => result.status === 201); const acceptedKey = attempts[0]?.status === 201 ? "transaction-concurrent-a" : "transaction-concurrent-b"; if (!accepted) throw new Error("Expected one checkout to succeed.");
+    const sale = await prisma.sale.findUniqueOrThrow({ where: { id: accepted.body.id }, include: { items: true, payment: true } });
+    expect(sale.total.toString()).toBe("20000"); expect(sale.totalCost?.toString()).toBe("8000"); expect(sale.grossMargin?.toString()).toBe("12000");
+    expect(sale.items[0]?.productSku).toBe("TX-001"); expect(sale.items[0]?.unitCost?.toString()).toBe("4000"); expect(sale.payment?.cashReceived?.toString()).toBe("20000"); expect(sale.payment?.changeGiven?.toString()).toBe("0");
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(0);
+    expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(1);
+    const replay = await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", acceptedKey).send({ paymentMethod: "CASH", cashReceived: 20000, items: item }).expect(200);
+    expect(replay.body.idempotentReplay).toBe(true);
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", acceptedKey).send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(409);
+    await prisma.product.update({ where: { id: product.body.id }, data: { unitPrice: 99000, unitCost: 9900 } });
+    const snapshot = await prisma.saleItem.findFirstOrThrow({ where: { saleId: sale.id } }); expect(snapshot.unitPrice.toString()).toBe("10000"); expect(snapshot.unitCost?.toString()).toBe("4000");
+    const voidOne = agent.post("/api/v1/sales/" + sale.id + "/void").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ reason: "Synthetic reversal" });
+    const voidTwo = agent.post("/api/v1/sales/" + sale.id + "/void").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ reason: "Synthetic reversal" });
+    const voids = await Promise.all([voidOne, voidTwo]); expect(voids.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(2);
+    expect(await prisma.stockMovement.count({ where: { saleId: sale.id, reason: "POS_VOID" } })).toBe(1);
+    expect((await prisma.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe("VOIDED");
+  });
+});
