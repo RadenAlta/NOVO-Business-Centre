@@ -420,3 +420,28 @@ describe("Sprint 04 Store response security", () => {
     expect(JSON.stringify(financeReceipt.body)).not.toContain("grossMargin");
   });
 });
+
+
+describe("Sprint 04 Product and inventory integrity", () => {
+  it("keeps tenant SKU uniqueness, lifecycle, stock balances, and movement history consistent", async () => {
+    const account = await createAccount("inventory-integrity"); const other = await createAccount("inventory-integrity-other");
+    const agent = request.agent(app); const otherAgent = request.agent(app);
+    const loginResult = await login(agent, account); const csrf = loginResult.body.csrfToken as string;
+    const otherLogin = await login(otherAgent, other); const otherCsrf = otherLogin.body.csrfToken as string;
+    const category = await agent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ name: "Inventory" }).expect(201);
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "INV-001", name: "Synthetic Inventory", categoryId: category.body.id, unitPrice: 10000, unitCost: 5000, reorderLevel: 3, initialStock: 5 }).expect(201);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(5);
+    await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "inv-001", name: "Duplicate", unitPrice: 1 }).expect(409);
+    await otherAgent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ active: false }).expect(404);
+    await agent.post("/api/v1/products/" + product.body.id + "/receipts").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: 4, reference: "RCV-TEST" }).expect(201);
+    await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -2, reason: "Synthetic count" }).expect(201);
+    await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -99, reason: "Rejected negative" }).expect(409);
+    const persisted = await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } }); expect(persisted.stockOnHand).toBe(7);
+    const movements = await agent.get("/api/v1/products/" + product.body.id + "/movements?page=1&pageSize=10").expect(200);
+    expect(movements.body.pagination.total).toBe(3); expect(movements.body.data.map((item: { quantity: number }) => item.quantity).sort()).toEqual([-2,4,5]);
+    expect(movements.body.data.every((item: { balanceAfter: number; performedBy: { name: string } }) => typeof item.balanceAfter === "number" && item.performedBy.name.length > 0)).toBe(true);
+    const lowStock = await agent.get("/api/v1/products?lowStock=true").expect(200); expect(lowStock.body.data.some((item: { id: string }) => item.id === product.body.id)).toBe(false);
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf).send({ active: false, unitPrice: 12000, unitCost: 6000 }).expect(200);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).active).toBe(false);
+  });
+});
