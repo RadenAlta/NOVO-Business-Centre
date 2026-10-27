@@ -525,3 +525,29 @@ describe("Sprint 04 StorePayment rollback isolation", () => {
     expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(1); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(1); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(1); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(0);
   });
 });
+
+
+async function withFixtureMovementFailure(tenantId: string, reason: string, suffix: string, callback: () => Promise<void>): Promise<void> {
+  const fn = "novo_fail_movement_" + suffix; const trigger = fn + "_trigger"; const escaped = tenantId.replace(/'/g, "''");
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + trigger + ' ON "StockMovement";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + fn + '();');
+  try { await prisma.$executeRawUnsafe("CREATE FUNCTION " + fn + "() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''" + escaped + "'' AND NEW.reason = ''" + reason + "'' THEN RAISE EXCEPTION ''forced movement failure''; END IF; RETURN NEW; END;'"); await prisma.$executeRawUnsafe('CREATE TRIGGER ' + trigger + ' BEFORE INSERT ON "StockMovement" FOR EACH ROW EXECUTE FUNCTION ' + fn + '();'); await callback(); }
+  finally { await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + trigger + ' ON "StockMovement";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + fn + '();'); }
+}
+
+describe("Sprint 04 POS movement rollback", () => {
+  it("rolls back checkout when POS_SALE movement insertion fails", async () => {
+    const account=await createAccount("pos-sale-failure"); const agent=request.agent(app); const signed=await login(agent,account); const csrf=signed.body.csrfToken as string;
+    const product=await agent.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",csrf).send({sku:"SALEFAIL-01",name:"Sale Failure",unitPrice:10000,initialStock:1}).expect(201);
+    await withFixtureMovementFailure(account.tenantId,"POS_SALE","sale",async()=>{await agent.post("/api/v1/sales").set("Origin",origin).set("X-Novo-Csrf",csrf).set("Idempotency-Key","pos-sale-fail-01").send({paymentMethod:"CASH",cashReceived:10000,items:[{productId:product.body.id,quantity:1}]}).expect(500);});
+    expect(await prisma.sale.count({where:{tenantId:account.tenantId}})).toBe(0);expect(await prisma.storePayment.count({where:{tenantId:account.tenantId}})).toBe(0);expect(await prisma.stockMovement.count({where:{tenantId:account.tenantId,reason:"POS_SALE"}})).toBe(0);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(1);
+    await agent.post("/api/v1/sales").set("Origin",origin).set("X-Novo-Csrf",csrf).set("Idempotency-Key","pos-sale-success-01").send({paymentMethod:"CASH",cashReceived:10000,items:[{productId:product.body.id,quantity:1}]}).expect(201);expect(await prisma.sale.count({where:{tenantId:account.tenantId}})).toBe(1);
+  });
+  it("rolls back void when POS_VOID movement insertion fails", async () => {
+    const account=await createAccount("pos-void-failure"); const agent=request.agent(app); const signed=await login(agent,account); const csrf=signed.body.csrfToken as string;
+    const product=await agent.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",csrf).send({sku:"VOIDFAIL-01",name:"Void Failure",unitPrice:10000,initialStock:1}).expect(201);
+    const sale=await agent.post("/api/v1/sales").set("Origin",origin).set("X-Novo-Csrf",csrf).set("Idempotency-Key","pos-void-sale-01").send({paymentMethod:"CASH",cashReceived:10000,items:[{productId:product.body.id,quantity:1}]}).expect(201);
+    await withFixtureMovementFailure(account.tenantId,"POS_VOID","void",async()=>{await agent.post("/api/v1/sales/"+sale.body.id+"/void").set("Origin",origin).set("X-Novo-Csrf",csrf).send({reason:"Injected movement failure"}).expect(500);});
+    const unchanged=await prisma.sale.findUniqueOrThrow({where:{id:sale.body.id}});expect(unchanged.status).toBe("COMPLETED");expect(unchanged.voidReason).toBeNull();expect(unchanged.voidedAt).toBeNull();expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(0);expect(await prisma.stockMovement.count({where:{saleId:sale.body.id,reason:"POS_VOID"}})).toBe(0);expect(await prisma.auditLog.count({where:{entityId:sale.body.id,action:"void"}})).toBe(0);
+    await agent.post("/api/v1/sales/"+sale.body.id+"/void").set("Origin",origin).set("X-Novo-Csrf",csrf).send({reason:"Retry after cleanup"}).expect(200);expect((await prisma.sale.findUniqueOrThrow({where:{id:sale.body.id}})).status).toBe("VOIDED");expect(await prisma.stockMovement.count({where:{saleId:sale.body.id,reason:"POS_VOID"}})).toBe(1);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(1);
+  });
+});
