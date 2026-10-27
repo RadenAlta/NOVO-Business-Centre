@@ -39,6 +39,10 @@ enum PaymentMethod {
   QRIS
   CARD
 }
+
+enum StorePaymentStatus {
+  RECORDED
+}
 enum SubscriptionStatus {
   ACTIVE
   PAUSED
@@ -88,8 +92,10 @@ model Tenant {
   masterDataRecords     MasterDataRecord[]
   masterDataImportPreviews MasterDataImportPreview[]
   products              Product[]
+  productCategories     ProductCategory[]
   stockMovements        StockMovement[]
   sales                 Sale[]
+  storePayments         StorePayment[]
   shuttleRoutes         ShuttleRoute[]
   shuttleSubscriptions  ShuttleSubscription[]
   invoices              Invoice[]
@@ -120,6 +126,9 @@ model User {
   tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   member       CooperativeMember?  @relation(fields: [memberId], references: [id])
   sales        Sale[]              @relation("CashierSales")
+  voidedSales  Sale[]              @relation("SaleVoidedBy")
+  stockMovements StockMovement[]   @relation("StockMovementActor")
+  storePayments StorePayment[]     @relation("StorePaymentRecorder")
   audits       AuditLog[]          @relation("ActorAudits")
   attachments  Attachment[]        @relation("UploaderAttachments")
   sessions     UserSession[]
@@ -188,6 +197,7 @@ model MasterDataRecord {
   updatedAt        DateTime       @updatedAt
   tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   memberships      CooperativeMember[]
+  customerSales    Sale[]          @relation("SaleCustomer")
   @@unique([tenantId, type, identifier])
   @@index([tenantId, type, active, fullName])
   @@index([tenantId, externalSimsId])
@@ -207,63 +217,131 @@ model MasterDataImportPreview {
   @@index([tenantId, createdById, expiresAt])
   @@index([expiresAt])
 }
+model ProductCategory {
+  id          String    @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products    Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, active, name])
+}
+
 model Product {
-  id           String          @id @default(cuid())
+  id           String           @id @default(cuid())
   tenantId     String
   sku          String
   name         String
   description  String?
-  unitPrice    Decimal         @db.Decimal(14, 2)
-  reorderLevel Int             @default(0)
-  active       Boolean         @default(true)
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  tenant       Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  categoryId   String?
+  unitPrice    Decimal          @db.Decimal(14, 2)
+  unitCost     Decimal?         @db.Decimal(14, 2)
+  stockOnHand  Int              @default(0)
+  reorderLevel Int              @default(0)
+  active       Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category     ProductCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   movements    StockMovement[]
   saleItems    SaleItem[]
+
   @@unique([tenantId, sku])
   @@index([tenantId, active])
+  @@index([tenantId, categoryId, active])
 }
 
 model StockMovement {
-  id        String    @id @default(cuid())
-  tenantId  String
-  productId String
-  quantity  Int
-  reason    String
-  reference String?
-  createdAt DateTime  @default(now())
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  id            String   @id @default(cuid())
+  tenantId      String
+  productId     String
+  quantity      Int
+  reason        String
+  reference     String?
+  balanceAfter  Int?
+  performedById String?
+  saleId        String?
+  createdAt     DateTime @default(now())
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  performedBy   User?    @relation("StockMovementActor", fields: [performedById], references: [id], onDelete: SetNull)
+  sale          Sale?    @relation(fields: [saleId], references: [id], onDelete: Restrict)
+
   @@index([tenantId, productId, createdAt])
+  @@index([tenantId, saleId])
 }
 
 model Sale {
-  id            String        @id @default(cuid())
-  tenantId      String
-  cashierId     String
-  receiptNo     String
-  status        SaleStatus    @default(COMPLETED)
-  paymentMethod PaymentMethod
-  total         Decimal       @db.Decimal(14, 2)
-  occurredAt    DateTime      @default(now())
-  createdAt     DateTime      @default(now())
-  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  cashier       User          @relation("CashierSales", fields: [cashierId], references: [id])
-  items         SaleItem[]
+  id                 String             @id @default(cuid())
+  tenantId           String
+  cashierId          String
+  receiptNo          String
+  customerIdentityId String?
+  idempotencyKey     String?
+  inputFingerprint   String?
+  status             SaleStatus         @default(COMPLETED)
+  paymentMethod      PaymentMethod
+  total              Decimal            @db.Decimal(14, 2)
+  totalCost          Decimal?           @db.Decimal(14, 2)
+  grossMargin        Decimal?           @db.Decimal(14, 2)
+  voidReason         String?
+  voidedAt           DateTime?
+  voidedById         String?
+  occurredAt         DateTime           @default(now())
+  createdAt          DateTime           @default(now())
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cashier            User               @relation("CashierSales", fields: [cashierId], references: [id])
+  customerIdentity   MasterDataRecord?  @relation("SaleCustomer", fields: [customerIdentityId], references: [id], onDelete: SetNull)
+  voidedBy           User?              @relation("SaleVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+  items              SaleItem[]
+  payment            StorePayment?
+  stockMovements     StockMovement[]
+
   @@unique([tenantId, receiptNo])
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId, occurredAt])
+  @@index([tenantId, status, occurredAt])
 }
 
 model SaleItem {
-  id        String   @id @default(cuid())
-  saleId    String
-  productId String
-  quantity  Int
-  unitPrice Decimal  @db.Decimal(14, 2)
-  subtotal  Decimal  @db.Decimal(14, 2)
-  sale      Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  id           String   @id @default(cuid())
+  saleId       String
+  productId    String
+  productSku   String
+  productName  String
+  quantity     Int
+  unitPrice    Decimal  @db.Decimal(14, 2)
+  subtotal     Decimal  @db.Decimal(14, 2)
+  unitCost     Decimal? @db.Decimal(14, 2)
+  costSubtotal Decimal? @db.Decimal(14, 2)
+  grossMargin  Decimal? @db.Decimal(14, 2)
+  sale         Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+}
+
+model StorePayment {
+  id           String             @id @default(cuid())
+  tenantId     String
+  saleId       String             @unique
+  recordedById String
+  method       PaymentMethod
+  status       StorePaymentStatus @default(RECORDED)
+  amount       Decimal            @db.Decimal(14, 2)
+  cashReceived Decimal?           @db.Decimal(14, 2)
+  changeGiven  Decimal?           @db.Decimal(14, 2)
+  reference    String?
+  recordedAt   DateTime           @default(now())
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  sale         Sale               @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  recordedBy   User               @relation("StorePaymentRecorder", fields: [recordedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, method, recordedAt])
+  @@unique([tenantId, reference])
 }
 
 model ShuttleRoute {
