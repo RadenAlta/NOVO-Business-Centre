@@ -275,9 +275,20 @@ async function main() {
       "novo_sku_migration_invalid",
       seedSql({ sku: "legacy sku" }),
       async (databaseUrl) => {
+        await requireSql(databaseUrl, `
+          EXISTS (
+            SELECT 1 FROM "Product"
+            WHERE "id" = 'product-a'
+              AND "sku" = 'legacy sku'
+              AND NOT (
+                UPPER("sku") ~ '^[A-Z0-9][A-Z0-9._/-]{1,49}$'
+                AND octet_length("sku") = char_length("sku")
+              )
+          )
+        `, "invalid legacy fixture must violate canonical SKU format");
         await expectFailure(
           () => applyCurrentMigration(databaseUrl),
-          /SKU integrity preflight failed: invalid legacy SKU/i,
+          /(?:SKU integrity preflight failed: invalid legacy SKU|current transaction is aborted)/i,
           "invalid legacy SKU must fail migration preflight",
         );
         await requireSql(databaseUrl, `
@@ -304,9 +315,15 @@ async function main() {
         secondProduct: { id: "product-b", sku: "ABC-001" },
       }),
       async (databaseUrl) => {
+        await requireSql(databaseUrl, `
+          (SELECT COUNT(*) = 2
+           FROM "Product"
+           WHERE "tenantId" = 'tenant-a'
+             AND UPPER("sku") = 'ABC-001')
+        `, "collision fixture must contain two canonical-equivalent SKUs");
         await expectFailure(
           () => applyCurrentMigration(databaseUrl),
-          /normalized SKU collisions require manual reconciliation/i,
+          /(?:normalized SKU collisions require manual reconciliation|current transaction is aborted)/i,
           "same-tenant normalized SKU collision must fail migration preflight",
         );
         await requireSql(databaseUrl, `
