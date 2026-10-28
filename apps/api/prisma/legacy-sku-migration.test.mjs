@@ -138,19 +138,30 @@ async function requireSql(databaseUrl, assertion, message) {
   }
 }
 
-async function createFixtureDatabase(adminUrl, databaseName) {
+function assertFixtureDatabaseName(databaseName) {
+  if (!fixtureDatabases.includes(databaseName)) {
+    throw new Error(`Refusing to modify unexpected database: ${databaseName}`);
+  }
+}
+
+async function terminateAndDropFixtureDatabase(adminUrl, databaseName) {
+  assertFixtureDatabaseName(databaseName);
+
   await sql(
     adminUrl,
-    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${databaseName}' AND pid <> pg_backend_pid();\nDROP DATABASE IF EXISTS "${databaseName}";`,
+    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${databaseName}' AND pid <> pg_backend_pid();`,
   );
+
+  await sql(adminUrl, `DROP DATABASE IF EXISTS "${databaseName}";`);
+}
+
+async function createFixtureDatabase(adminUrl, databaseName) {
+  await terminateAndDropFixtureDatabase(adminUrl, databaseName);
   await sql(adminUrl, `CREATE DATABASE "${databaseName}";`);
 }
 
 async function dropFixtureDatabase(adminUrl, databaseName) {
-  await sql(
-    adminUrl,
-    `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${databaseName}' AND pid <> pg_backend_pid();\nDROP DATABASE IF EXISTS "${databaseName}";`,
-  );
+  await terminateAndDropFixtureDatabase(adminUrl, databaseName);
 }
 
 async function createPreSkuSchema() {
