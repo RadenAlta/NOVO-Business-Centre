@@ -251,7 +251,7 @@ async function waitForLock(client, expectedDatabaseName, predicate, description)
 }
 
 function isCancellationError(error) {
-  return /canceling statement due to user request|query was canceled|P2010/i.test(
+  return /canceling statement due to user request|query was canceled/i.test(
     `${error?.message ?? ""}\n${error?.code ?? ""}\n${error?.meta?.message ?? ""}`,
   );
 }
@@ -392,6 +392,7 @@ async function main() {
           BEFORE UPDATE OF "sku" ON "Product"
           FOR EACH ROW EXECUTE FUNCTION "novo_sku_pause_update"();
         `);
+        let primaryFailure;
         try {
           await Promise.all([monitor.$connect(), barrierClient.$connect(), writerClient.$connect()]);
 
@@ -408,7 +409,7 @@ async function main() {
             .$transaction(
               async (transaction) => {
                 const backend = await transaction.$queryRawUnsafe("SELECT pg_backend_pid() AS pid");
-                await transaction.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${concurrencyBarrierKey})`);
+                await transaction.$queryRawUnsafe(`SELECT pg_advisory_xact_lock(${concurrencyBarrierKey})`);
                 markBarrierReady(backend[0]?.pid);
                 await barrierRelease;
               },
@@ -459,7 +460,7 @@ async function main() {
             throw new Error("Writer completed despite a pending RowExclusiveLock observation.");
           }
           const cancellation = await monitor.$queryRawUnsafe(
-            "SELECT pg_cancel_backend($1) AS cancelled",
+            "SELECT pg_cancel_backend($1::integer) AS cancelled",
             writerPid,
           );
           if (cancellation.length !== 1 || cancellation[0].cancelled !== true) {
@@ -495,6 +496,8 @@ async function main() {
             AND NOT EXISTS (SELECT 1 FROM "Product" WHERE "id" = 'product-race-lowercase')
             AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Product_sku_canonical_ascii_check')
           `, "migration lock prevents a lower-case direct write from crossing the preflight/constraint interval and the committed CHECK rejects fresh lowercase writes");
+        } catch (error) {
+          primaryFailure = error;
         } finally {
           const cleanupFailures = [];
           if (writerOutcome && writerPid) {
@@ -504,7 +507,7 @@ async function main() {
                 const locks = await currentDatabaseLockRows(monitor, fixtureDatabaseName);
                 const pendingWriter = locks.find((lock) => lock.mode === "RowExclusiveLock" && lock.granted === false && Number(lock.pid) === writerPid);
                 if (pendingWriter) {
-                  await monitor.$queryRawUnsafe("SELECT pg_cancel_backend($1)", writerPid);
+                  await monitor.$queryRawUnsafe("SELECT pg_cancel_backend($1::integer)", writerPid);
                 }
               }
             } catch (error) {
@@ -524,7 +527,15 @@ async function main() {
             cleanupFailures.push(...disconnects.filter((result) => result.status === "rejected").map((result) => result.reason));
           }
           if (cleanupFailures.length) {
-            throw new AggregateError(cleanupFailures, "Legacy SKU concurrency fixture cleanup failed.");
+            throw new AggregateError(
+              primaryFailure
+                ? [primaryFailure, ...cleanupFailures]
+                : cleanupFailures,
+              "Legacy SKU concurrency test or cleanup failed.",
+            );
+          }
+          if (primaryFailure) {
+            throw primaryFailure;
           }
         }
       },
