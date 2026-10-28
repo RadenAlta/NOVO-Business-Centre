@@ -14,7 +14,7 @@
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
     "preflight:store-sku": "tsx prisma/preflight-store-sku-integrity.ts",
-    "test:legacy-sku-migration": "node prisma/legacy-sku-migration.test.mjs"
+    "test:legacy-sku-migration": "node prisma/legacy-sku-migration.integration.mjs"
   },
   "dependencies": {
     "@novo/contracts": "workspace:*",
