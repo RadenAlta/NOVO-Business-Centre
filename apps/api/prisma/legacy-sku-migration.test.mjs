@@ -98,7 +98,7 @@ function runPrisma(args, { databaseUrl, stdin } = {}) {
 }
 
 function sql(databaseUrl, statement) {
-  return runPrisma(["db", "execute", "--stdin"], {
+  return runPrisma(["db", "execute", "--schema", join(currentDirectory, "schema.prisma"), "--stdin"], {
     databaseUrl,
     stdin: statement,
   });
