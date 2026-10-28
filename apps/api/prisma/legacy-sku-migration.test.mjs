@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { PrismaClient } from "@prisma/client";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const apiDirectory = resolve(currentDirectory, "..");
@@ -22,6 +23,7 @@ const fixtureDatabases = [
   "novo_sku_migration_cross_tenant",
   "novo_sku_migration_concurrency",
 ];
+const concurrencyBarrierKey = 748217511;
 
 function assertDisposableSourceDatabase() {
   if (process.env.NODE_ENV !== "test") {
@@ -117,19 +119,6 @@ async function expectFailure(action, pattern, message) {
   throw new Error(`${message}. The operation unexpectedly succeeded.`);
 }
 
-async function assertSql(databaseUrl, assertion, message) {
-  await expectFailure(
-    () => sql(databaseUrl, `DO $assert$ BEGIN IF NOT (${assertion}) THEN RAISE EXCEPTION 'assertion failed'; END IF; END $assert$;`),
-    /assertion failed/,
-    message,
-  ).catch((error) => {
-    if (error.message.includes("unexpectedly succeeded")) {
-      return;
-    }
-    throw error;
-  });
-}
-
 async function requireSql(databaseUrl, assertion, message) {
   try {
     await sql(databaseUrl, `DO $assert$ BEGIN IF NOT (${assertion}) THEN RAISE EXCEPTION 'assertion failed: ${message.replace(/'/g, "''")}'; END IF; END $assert$;`);
@@ -156,11 +145,13 @@ async function terminateAndDropFixtureDatabase(adminUrl, databaseName) {
 }
 
 async function createFixtureDatabase(adminUrl, databaseName) {
+  assertFixtureDatabaseName(databaseName);
   await terminateAndDropFixtureDatabase(adminUrl, databaseName);
   await sql(adminUrl, `CREATE DATABASE "${databaseName}";`);
 }
 
 async function dropFixtureDatabase(adminUrl, databaseName) {
+  assertFixtureDatabaseName(databaseName);
   await terminateAndDropFixtureDatabase(adminUrl, databaseName);
 }
 
@@ -225,23 +216,44 @@ async function withFixture(sourceUrl, schemaDirectory, databaseName, seed, test)
   }
 }
 
-async function waitForProductLock(databaseUrl) {
-  const assertion = `EXISTS (
-    SELECT 1
-    FROM pg_locks AS lock
-    WHERE lock.relation = '"Product"'::regclass
-      AND lock.mode = 'ShareRowExclusiveLock'
-      AND lock.granted
-  )`;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    try {
-      await requireSql(databaseUrl, assertion, "migration is still acquiring its Product write lock");
-      return;
-    } catch {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
-    }
+function fixturePrismaClient(databaseUrl) {
+  return new PrismaClient({ datasources: { db: { url: databaseUrl } } });
+}
+
+function delay(milliseconds) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+}
+
+async function currentDatabaseLockRows(client, expectedDatabaseName) {
+  const currentDatabase = await client.$queryRawUnsafe("SELECT current_database() AS name");
+  if (currentDatabase.length !== 1 || currentDatabase[0].name !== expectedDatabaseName) {
+    throw new Error(`Lock monitor is connected to ${currentDatabase[0]?.name ?? "<unknown>"}, not ${expectedDatabaseName}.`);
   }
-  throw new Error("The SKU migration never acquired ShareRowExclusiveLock on Product.");
+  return client.$queryRawUnsafe(`
+    SELECT lock.pid, lock.mode, lock.granted, lock.database, database.datname
+    FROM pg_locks AS lock
+    INNER JOIN pg_database AS database ON database.oid = lock.database
+    WHERE lock.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+      AND lock.relation = '"Product"'::regclass
+  `);
+}
+
+async function waitForLock(client, expectedDatabaseName, predicate, description) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const locks = await currentDatabaseLockRows(client, expectedDatabaseName);
+    const matchingLock = locks.find(predicate);
+    if (matchingLock) {
+      return matchingLock;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${description} on the fixture Product relation.`);
+}
+
+function isCancellationError(error) {
+  return /canceling statement due to user request|query was canceled|P2010/i.test(
+    `${error?.message ?? ""}\n${error?.code ?? ""}\n${error?.meta?.message ?? ""}`,
+  );
 }
 
 async function main() {
@@ -356,11 +368,22 @@ async function main() {
       "novo_sku_migration_concurrency",
       seedSql({ sku: "abc-001", tenantId: "tenant-race", productId: "product-race" }),
       async (databaseUrl) => {
+        const fixtureDatabaseName = "novo_sku_migration_concurrency";
+        const monitor = fixturePrismaClient(databaseUrl);
+        const barrierClient = fixturePrismaClient(databaseUrl);
+        const writerClient = fixturePrismaClient(databaseUrl);
+        let releaseBarrier;
+        let barrierOutcome;
+        let migrationOutcome;
+        let writerOutcome;
+        let migrationPid;
+        let writerPid;
+        let writerFinished = false;
         await sql(databaseUrl, `
           CREATE FUNCTION "novo_sku_pause_update"() RETURNS trigger LANGUAGE plpgsql AS $pause$
           BEGIN
             IF NEW."sku" = 'ABC-001' THEN
-              PERFORM pg_sleep(1.5);
+              PERFORM pg_advisory_xact_lock(${concurrencyBarrierKey});
             END IF;
             RETURN NEW;
           END;
@@ -370,32 +393,139 @@ async function main() {
           FOR EACH ROW EXECUTE FUNCTION "novo_sku_pause_update"();
         `);
         try {
-          const migration = applyCurrentMigration(databaseUrl);
-          await waitForProductLock(databaseUrl);
-          let writerSettled = false;
-          const writer = sql(databaseUrl, `
+          await Promise.all([monitor.$connect(), barrierClient.$connect(), writerClient.$connect()]);
+
+          let markBarrierReady;
+          let failBarrierReady;
+          const barrierReady = new Promise((resolveBarrier, rejectBarrier) => {
+            markBarrierReady = resolveBarrier;
+            failBarrierReady = rejectBarrier;
+          });
+          const barrierRelease = new Promise((resolveBarrierRelease) => {
+            releaseBarrier = resolveBarrierRelease;
+          });
+          barrierOutcome = barrierClient
+            .$transaction(
+              async (transaction) => {
+                const backend = await transaction.$queryRawUnsafe("SELECT pg_backend_pid() AS pid");
+                await transaction.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${concurrencyBarrierKey})`);
+                markBarrierReady(backend[0]?.pid);
+                await barrierRelease;
+              },
+              { maxWait: 5_000, timeout: 15_000 },
+            )
+            .then(() => ({ ok: true }), (error) => {
+              failBarrierReady(error);
+              return { ok: false, error };
+            });
+          await barrierReady;
+
+          migrationOutcome = applyCurrentMigration(databaseUrl).then(
+            () => ({ ok: true }),
+            (error) => ({ ok: false, error }),
+          );
+          const migrationLock = await waitForLock(
+            monitor,
+            fixtureDatabaseName,
+            (lock) => lock.mode === "ShareRowExclusiveLock" && lock.granted === true,
+            "a granted ShareRowExclusiveLock held by the migration",
+          );
+          migrationPid = Number(migrationLock.pid);
+          if (!Number.isInteger(migrationPid) || migrationPid <= 0) {
+            throw new Error(`Migration lock has an invalid backend PID: ${migrationLock.pid}`);
+          }
+
+          writerOutcome = writerClient.$executeRawUnsafe(`
             INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
             VALUES ('product-race-writer', 'tenant-race', 'race-002', 'Racing writer', 10000, 0, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-          `).finally(() => {
-            writerSettled = true;
+          `).then(
+            () => ({ ok: true }),
+            (error) => ({ ok: false, error }),
+          ).then((result) => {
+            writerFinished = true;
+            return result;
           });
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
-          if (writerSettled) {
-            throw new Error("direct Product writer was not blocked by the SKU migration lock");
+          const pendingWriterLock = await waitForLock(
+            monitor,
+            fixtureDatabaseName,
+            (lock) => lock.mode === "RowExclusiveLock" && lock.granted === false && Number(lock.pid) !== migrationPid,
+            "a pending RowExclusiveLock held by the direct writer",
+          );
+          writerPid = Number(pendingWriterLock.pid);
+          if (!Number.isInteger(writerPid) || writerPid <= 0) {
+            throw new Error(`Pending writer lock has an invalid backend PID: ${pendingWriterLock.pid}`);
           }
-          await migration;
+          if (writerFinished) {
+            throw new Error("Writer completed despite a pending RowExclusiveLock observation.");
+          }
+          const cancellation = await monitor.$queryRawUnsafe(
+            "SELECT pg_cancel_backend($1) AS cancelled",
+            writerPid,
+          );
+          if (cancellation.length !== 1 || cancellation[0].cancelled !== true) {
+            throw new Error(`PostgreSQL did not cancel blocked writer backend ${writerPid}.`);
+          }
+          const canceledWriter = await writerOutcome;
+          if (canceledWriter.ok || !isCancellationError(canceledWriter.error)) {
+            throw new Error(`Blocked writer did not fail from explicit cancellation: ${canceledWriter.error?.message ?? "completed successfully"}`);
+          }
+
+          releaseBarrier();
+          releaseBarrier = undefined;
+          const releasedBarrier = await barrierOutcome;
+          if (!releasedBarrier.ok) {
+            throw releasedBarrier.error;
+          }
+          const completedMigration = await migrationOutcome;
+          if (!completedMigration.ok) {
+            throw completedMigration.error;
+          }
+
           await expectFailure(
-            () => writer,
+            () => writerClient.$executeRawUnsafe(`
+              INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
+              VALUES ('product-race-lowercase', 'tenant-race', 'race-003', 'Lowercase after migration', 10000, 0, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+            `),
             /Product_sku_canonical_ascii_check|check constraint/i,
-            "blocked lowercase writer must be rejected after the canonical constraint commits",
+            "fresh lowercase writer is rejected by the committed canonical CHECK",
           );
           await requireSql(databaseUrl, `
             (SELECT "sku" = 'ABC-001' FROM "Product" WHERE "id" = 'product-race')
             AND NOT EXISTS (SELECT 1 FROM "Product" WHERE "id" = 'product-race-writer')
+            AND NOT EXISTS (SELECT 1 FROM "Product" WHERE "id" = 'product-race-lowercase')
             AND EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Product_sku_canonical_ascii_check')
-          `, "migration lock prevents a lower-case direct write from crossing the preflight/constraint interval");
+          `, "migration lock prevents a lower-case direct write from crossing the preflight/constraint interval and the committed CHECK rejects fresh lowercase writes");
         } finally {
-          await sql(databaseUrl, `DROP TRIGGER IF EXISTS "novo_sku_pause_update_trigger" ON "Product"; DROP FUNCTION IF EXISTS "novo_sku_pause_update"();`);
+          const cleanupFailures = [];
+          if (writerOutcome && writerPid) {
+            try {
+              const settledWriter = await Promise.race([writerOutcome, delay(0).then(() => undefined)]);
+              if (!settledWriter) {
+                const locks = await currentDatabaseLockRows(monitor, fixtureDatabaseName);
+                const pendingWriter = locks.find((lock) => lock.mode === "RowExclusiveLock" && lock.granted === false && Number(lock.pid) === writerPid);
+                if (pendingWriter) {
+                  await monitor.$queryRawUnsafe("SELECT pg_cancel_backend($1)", writerPid);
+                }
+              }
+            } catch (error) {
+              cleanupFailures.push(error);
+            }
+          }
+          if (releaseBarrier) {
+            releaseBarrier();
+          }
+          await Promise.allSettled([barrierOutcome, migrationOutcome, writerOutcome].filter(Boolean));
+          try {
+            await sql(databaseUrl, `DROP TRIGGER IF EXISTS "novo_sku_pause_update_trigger" ON "Product"; DROP FUNCTION IF EXISTS "novo_sku_pause_update"();`);
+          } catch (error) {
+            cleanupFailures.push(error);
+          } finally {
+            const disconnects = await Promise.allSettled([monitor.$disconnect(), barrierClient.$disconnect(), writerClient.$disconnect()]);
+            cleanupFailures.push(...disconnects.filter((result) => result.status === "rejected").map((result) => result.reason));
+          }
+          if (cleanupFailures.length) {
+            throw new AggregateError(cleanupFailures, "Legacy SKU concurrency fixture cleanup failed.");
+          }
         }
       },
     );
