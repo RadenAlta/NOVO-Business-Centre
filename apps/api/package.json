@@ -13,7 +13,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
-    "preflight:store-sku": "tsx prisma/preflight-store-sku-integrity.ts"
+    "preflight:store-sku": "tsx prisma/preflight-store-sku-integrity.ts",
+    "test:legacy-sku-migration": "node prisma/legacy-sku-migration.test.mjs"
   },
   "dependencies": {
     "@novo/contracts": "workspace:*",

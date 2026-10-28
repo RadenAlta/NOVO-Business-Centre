@@ -2,18 +2,21 @@
 
 ## Canonical contract
 
-A Product SKU is a 2–50 character ASCII identifier matching `[A-Z0-9][A-Z0-9._/-]{1,49}`. The API accepts lowercase input only so it can return/store the canonical uppercase form. Whitespace, Unicode characters and other punctuation are rejected rather than silently transformed. The database also requires byte length to equal character length, so a database write cannot exploit collation-dependent character ranges to store non-ASCII text.
+A Product SKU is a 2–50 character ASCII identifier matching `[A-Z0-9][A-Z0-9._/-]{1,49}` in canonical storage. The API accepts lowercase input so it can return/store the canonical uppercase form. The database also requires byte length to equal character length, so a database write cannot exploit collation-dependent character ranges to store non-ASCII text.
 
 This restriction is deliberate: for the allowed ASCII alphabet, TypeScript `trim().toUpperCase()` and PostgreSQL `upper(btrim(sku))` have the same semantics. It removes locale- and Unicode-folding ambiguity from a financial/inventory identifier.
 
 ## Safe deployment procedure
 
-1. Take the normal database backup/change-control checkpoint.
-2. Run the read-only report: `pnpm --filter @novo/api preflight:store-sku`.
-3. Manually reconcile every reported invalid value or same-tenant normalized collision. The report includes tenant ID, product ID and original SKU values.
-4. Rerun the preflight until it exits 0, then deploy migrations.
+1. Confirm that migration `202610280006_store_sku_integrity` has **not** already been applied to any persistent environment. This repository contains no persistent deployment configuration or migration-status evidence; the release owner must verify the target with `prisma migrate status` and deployment logs before this migration file is changed or deployed. Never edit the migration after a persistent environment has recorded its checksum.
+2. Take the normal database backup/change-control checkpoint and announce a short Product-write maintenance window. Read-only Product queries may continue, but application and direct database Product writes must be quiesced.
+3. Run the read-only report: `pnpm --filter @novo/api preflight:store-sku`.
+4. Manually reconcile every reported invalid value or same-tenant normalized collision. The report includes tenant ID, product ID and original SKU values.
+5. Rerun the preflight until it exits 0, then deploy migrations while the write window is active. Record `prisma migrate status`, the deployment log, and the migration ID in the change record.
 
-The migration independently repeats the preflight and aborts before any update if it finds invalid legacy values or a normalized collision. It never deletes products, merges records, appends suffixes, or selects a winner. After a clean preflight it uppercases valid legacy Product SKU values to match the API contract. Product IDs, sale records and `SaleItem.productSku` historical snapshots are not changed.
+The migration is one explicit PostgreSQL transaction. It takes `SHARE ROW EXCLUSIVE` on `"Product"` before the repeated preflight, uses a five-second local lock timeout, canonicalizes only clean valid values, and installs the CHECK before committing. Product INSERT/UPDATE/DELETE operations conflict with that lock, so a direct writer cannot pass between preflight and the constraint. If the lock timeout or preflight fails, PostgreSQL rolls the whole transaction back before any legacy SKU is rewritten. It never deletes products, merges records, appends suffixes, or selects a winner. Product IDs, sale records and `SaleItem.productSku` historical snapshots are not changed.
+
+If deployment records a failed migration, first inspect the database, migration logs, and affected Product rows. Reconcile data manually, then use `prisma migrate resolve --rolled-back 202610280006_store_sku_integrity` only after confirming that the failed transaction made no schema/data change; rerun the preflight and deploy. Do not use `prisma migrate reset` in a persistent environment. Do not edit an already-applied migration to change its checksum.
 
 ## Database boundary
 
@@ -23,4 +26,8 @@ Prisma schema syntax can express the ordinary composite unique index but not thi
 
 ## Verification boundary
 
-The migration and PostgreSQL integration tests must run in GitHub Actions before HIGH-02 can be closed. Local source/type checks do not prove a migration against a database containing real legacy SKU data.
+`pnpm --filter @novo/api test:legacy-sku-migration` creates isolated disposable fixture databases only when its source database is the CI/test database (`novo_ci` or `novo_test`). It tests valid legacy canonicalization with preserved references/snapshots, invalid legacy failure/recovery, same-tenant collision failure without a chosen winner, cross-tenant reuse, and a two-connection Product-write race during the lock window. GitHub Actions runs this explicit stage before the ordinary `prisma migrate deploy` step.
+
+The API currently trims its input before canonicalization, while the migration/preflight rejects stored outer whitespace. That acceptance-policy mismatch is HIGH-02B and is deliberately deferred to CP4-D2-R2; no whitespace API behavior is changed by this atomicity checkpoint.
+
+The migration safety harness and PostgreSQL integration tests must run in GitHub Actions before HIGH-02A can be closed. Local source/type checks do not prove a migration against a database containing real legacy SKU data.

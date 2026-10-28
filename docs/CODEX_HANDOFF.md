@@ -1,9 +1,9 @@
-# Sprint 04 — CP4-D2 SKU integrity checkpoint
+# Sprint 04 — CP4-D2-R1 SKU migration atomicity checkpoint
 
 - Branch: `codex/sprint-04-store-pos-inventory`; baseline independently reported by owner: `eb169c7` (CI 40491042299 success).
-- HIGH-01 remains CLOSED by the owner-reported re-audit. HIGH-02 is **code and migration pending verification**: a new, forward-only migration preflights invalid/colliding Product SKU records, canonicalizes only clean valid legacy ASCII values, and adds a database CHECK boundary. No legacy product is deleted, merged, suffixed, or silently selected as a winner.
-- `pnpm --filter @novo/api preflight:store-sku` is read-only and reports tenant ID, product ID and original SKU for invalid values/collisions. Production deployment must run it and manually resolve every finding before `prisma migrate deploy`.
-- Local PostgreSQL integration remains BLOCKED until a disposable `novo_test` database is available. The new migration and security/inventory regression cases require GitHub Actions PostgreSQL 16 before HIGH-02 may be closed.
+- HIGH-01 remains CLOSED by the owner-reported re-audit. HIGH-02A is **code/test pending CI**: the unmerged forward migration preflights invalid/colliding Product SKU records, takes `SHARE ROW EXCLUSIVE` on Product in one explicit transaction, canonicalizes only clean valid legacy ASCII values, and adds a database CHECK boundary. No legacy product is deleted, merged, suffixed, or silently selected as a winner.
+- `pnpm --filter @novo/api preflight:store-sku` is read-only and reports tenant ID, product ID and original SKU for invalid values/collisions. Production deployment must run it and manually resolve every finding before `prisma migrate deploy`; record backup, maintenance window, migration status, and logs. The release owner must first verify that no persistent environment has applied the earlier migration checksum. Never use `migrate reset` in production.
+- `pnpm --filter @novo/api test:legacy-sku-migration` is wired as an explicit GitHub Actions stage before ordinary migration deploy and uses isolated CI/test fixture databases. Local PostgreSQL integration remains BLOCKED until a disposable `novo_test` database is available. HIGH-02B (outer-whitespace policy mismatch) remains OPEN and is not changed in R1.
 - FR-006 remains **partial**. MED-01 structured-preview retention purge remains **OPEN** and mandatory before production personal-data processing. All 86 requirement IDs, including 42 Side Quests, remain tracked; none is promoted by this checkpoint.
 # CODEX Handoff — Sprint 03 PR #3 final XLSX hardening
 

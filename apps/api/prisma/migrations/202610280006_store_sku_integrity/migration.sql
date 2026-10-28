@@ -1,5 +1,13 @@
 -- Product SKU integrity: API and database share the same canonical ASCII form.
 -- Do not resolve the reported conflicts automatically: a business owner must reconcile them.
+BEGIN;
+
+-- Keep the migration bounded during the announced write-quiescence window.
+-- A lock timeout aborts this transaction before any legacy SKU is rewritten.
+SET LOCAL lock_timeout = '5s';
+
+LOCK TABLE "Product" IN SHARE ROW EXCLUSIVE MODE;
+
 DO $$
 DECLARE
   invalid_detail TEXT;
@@ -64,3 +72,5 @@ ALTER TABLE "Product"
     "sku" ~ '^[A-Z0-9][A-Z0-9._/-]{1,49}$'
     AND octet_length("sku") = char_length("sku")
   );
+
+COMMIT;
