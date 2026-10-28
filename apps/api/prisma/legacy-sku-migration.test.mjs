@@ -409,7 +409,7 @@ async function main() {
             .$transaction(
               async (transaction) => {
                 const backend = await transaction.$queryRawUnsafe("SELECT pg_backend_pid() AS pid");
-                await transaction.$queryRawUnsafe(`SELECT pg_advisory_xact_lock(${concurrencyBarrierKey})`);
+                await transaction.$executeRawUnsafe(`SELECT pg_advisory_xact_lock(${concurrencyBarrierKey})`);
                 markBarrierReady(backend[0]?.pid);
                 await barrierRelease;
               },
