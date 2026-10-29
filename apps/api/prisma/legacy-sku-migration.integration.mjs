@@ -119,6 +119,25 @@ async function expectFailure(action, pattern, message) {
   throw new Error(`${message}. The operation unexpectedly succeeded.`);
 }
 
+async function verifyCurrentMigrationPreflightFailure(databaseUrl, pattern, message) {
+  const { readFile } = await import("node:fs/promises");
+  const migrationSql = await readFile(
+    join(currentDirectory, "migrations", "202610280006_store_sku_integrity", "migration.sql"),
+    "utf8",
+  );
+
+  const preflightBlocks = migrationSql.match(/DO \$\$[\s\S]*?END \$\$;/g);
+
+  if (preflightBlocks?.length !== 1) {
+    throw new Error("Expected exactly one preflight DO block in the current SKU migration.");
+  }
+
+  await expectFailure(
+    () => sql(databaseUrl, preflightBlocks[0]),
+    pattern,
+    message,
+  );
+}
 async function requireSql(databaseUrl, assertion, message) {
   try {
     await sql(databaseUrl, `DO $assert$ BEGIN IF NOT (${assertion}) THEN RAISE EXCEPTION 'assertion failed: ${message.replace(/'/g, "''")}'; END IF; END $assert$;`);
@@ -298,6 +317,11 @@ async function main() {
               )
           )
         `, "invalid legacy fixture must violate canonical SKU format");
+        await verifyCurrentMigrationPreflightFailure(
+          databaseUrl,
+          /NOVO SKU integrity preflight failed: invalid legacy SKU values\./i,
+          "actual migration preflight must reject invalid legacy SKU",
+        );
         await expectFailure(
           () => applyCurrentMigration(databaseUrl),
           /(?:SKU integrity preflight failed: invalid legacy SKU|current transaction is aborted)/i,
@@ -333,6 +357,11 @@ async function main() {
            WHERE "tenantId" = 'tenant-a'
              AND UPPER("sku") = 'ABC-001')
         `, "collision fixture must contain two canonical-equivalent SKUs");
+        await verifyCurrentMigrationPreflightFailure(
+          databaseUrl,
+          /NOVO SKU integrity preflight failed: normalized SKU collisions require manual reconciliation\./i,
+          "actual migration preflight must reject same-tenant SKU collision",
+        );
         await expectFailure(
           () => applyCurrentMigration(databaseUrl),
           /(?:normalized SKU collisions require manual reconciliation|current transaction is aborted)/i,
