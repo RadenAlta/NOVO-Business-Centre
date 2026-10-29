@@ -14,6 +14,7 @@
     "prisma:migrate": "prisma migrate dev",
     "seed": "tsx prisma/seed.ts",
     "preflight:store-sku": "tsx prisma/preflight-store-sku-integrity.ts",
+    "purge:import-previews": "node dist/maintenance/purge-expired-import-previews.js",
     "test:legacy-sku-migration": "node prisma/legacy-sku-migration.integration.mjs"
   },
   "dependencies": {

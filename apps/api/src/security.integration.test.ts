@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { app } from "./app.js";
 import { hashSecret } from "./auth.js";
 import { prisma } from "./db.js";
+import { purgeExpiredImportPreviews } from "./import-preview-retention.js";
 import { env } from "./env.js";
 import { masterDataColumns, toExcelJsBuffer } from "./master-data-import.js";
 
@@ -423,6 +424,119 @@ describe("Sprint 04 Store response security", () => {
 });
 
 
+describe("MED-01 structured import preview retention", () => {
+  it("purges expired previews across tenants and users without deleting active previews", async () => {
+    const primary = await createAccount("retention-primary");
+    const secondUser = await createTenantUser(
+      primary,
+      "retention-second-user",
+    );
+    const foreign = await createAccount("retention-foreign");
+
+    const cutoff = new Date("2030-01-01T12:00:00.000Z");
+    const expired = new Date(cutoff.getTime() - 1000);
+    const active = new Date(cutoff.getTime() + 1000);
+
+    async function makePreview(
+      tenantId: string,
+      createdById: string,
+      expiresAt: Date,
+      consumedAt: Date | null = null,
+    ) {
+      return prisma.masterDataImportPreview.create({
+        data: {
+          tenantId,
+          createdById,
+          fingerprint: "a".repeat(64),
+          payload: {
+            rows: [
+              {
+                identifier: "SYNTHETIC-001",
+                fullName: "Synthetic Retention Fixture",
+              },
+            ],
+            issues: [],
+          },
+          expiresAt,
+          consumedAt,
+        },
+      });
+    }
+
+    const expiredOwner = await makePreview(
+      primary.tenantId,
+      primary.userId,
+      expired,
+    );
+
+    const expiredSecondUser = await makePreview(
+      primary.tenantId,
+      secondUser.userId,
+      expired,
+      new Date(cutoff.getTime() - 30000),
+    );
+
+    const expiredForeign = await makePreview(
+      foreign.tenantId,
+      foreign.userId,
+      expired,
+    );
+
+    const expiredAtBoundary = await makePreview(
+      foreign.tenantId,
+      foreign.userId,
+      cutoff,
+    );
+
+    const activeOwner = await makePreview(
+      primary.tenantId,
+      primary.userId,
+      active,
+    );
+
+    const activeForeign = await makePreview(
+      foreign.tenantId,
+      foreign.userId,
+      active,
+    );
+
+    expect(await purgeExpiredImportPreviews(cutoff)).toBe(4);
+
+    for (const preview of [
+      expiredOwner,
+      expiredSecondUser,
+      expiredForeign,
+      expiredAtBoundary,
+    ]) {
+      expect(
+        await prisma.masterDataImportPreview.findUnique({
+          where: { id: preview.id },
+        }),
+      ).toBeNull();
+    }
+
+    const retained = await prisma.masterDataImportPreview.findMany({
+      select: { id: true },
+    });
+
+    expect(retained.map((row) => row.id).sort()).toEqual(
+      [activeOwner.id, activeForeign.id].sort(),
+    );
+
+    const activePayload =
+      await prisma.masterDataImportPreview.findUniqueOrThrow({
+        where: { id: activeOwner.id },
+      });
+
+    expect(activePayload.payload).toMatchObject({
+      rows: [{ fullName: "Synthetic Retention Fixture" }],
+    });
+
+    expect(await purgeExpiredImportPreviews(cutoff)).toBe(0);
+
+    expect(await prisma.masterDataRecord.count()).toBe(0);
+  });
+});
 describe("Sprint 04 SKU raw-input API contract", () => {
   it("rejects whitespace on product creation without side effects", async () => {
     const account = await createAccount("sku-input-post");
