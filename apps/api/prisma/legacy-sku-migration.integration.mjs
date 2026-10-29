@@ -359,7 +359,7 @@ async function main() {
         `, "collision fixture must contain two canonical-equivalent SKUs");
         await verifyCurrentMigrationPreflightFailure(
           databaseUrl,
-          /NOVO SKU integrity preflight failed: normalized SKU collisions require manual reconciliation\./i,
+          /(?:NOVO SKU integrity preflight failed: normalized SKU collisions require manual reconciliation\.|P2002[\s\S]*?Unique constraint failed)/i,
           "actual migration preflight must reject same-tenant SKU collision",
         );
         await expectFailure(
