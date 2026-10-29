@@ -40,6 +40,14 @@ jobs:
             novo-api:ci \
             --check apps/api/dist/maintenance/purge-expired-import-previews.js
 
+      - name: Verify Prisma CLI in runtime image
+        run: |
+          docker run --rm --entrypoint sh novo-api:ci -ec \
+            'test -f apps/api/prisma/schema.prisma &&
+             test -d apps/api/prisma/migrations &&
+             test -x apps/api/node_modules/.bin/prisma &&
+             apps/api/node_modules/.bin/prisma --version'
+
       - name: Verify missing DATABASE_URL is rejected
         shell: bash
         run: |
