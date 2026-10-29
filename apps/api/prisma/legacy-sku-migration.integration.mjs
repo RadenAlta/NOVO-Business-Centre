@@ -465,25 +465,73 @@ async function main() {
             throw new Error(`Migration lock has an invalid backend PID: ${migrationLock.pid}`);
           }
 
-          writerOutcome = writerClient.$executeRawUnsafe(`
-            INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
-            VALUES ('product-race-writer', 'tenant-race', 'race-002', 'Racing writer', 10000, 0, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-          `).then(
+          // Pin the INSERT and PID lookup to the same PostgreSQL connection.
+          let signalWriterPid;
+          const writerPidReady = new Promise((resolveWriterPid) => {
+            signalWriterPid = resolveWriterPid;
+          });
+
+          writerOutcome = writerClient.$transaction(
+            async (tx) => {
+              const backend = await tx.$queryRawUnsafe(
+                "SELECT pg_backend_pid() AS pid",
+              );
+
+              writerPid = Number(backend[0]?.pid);
+
+              if (!Number.isInteger(writerPid) || writerPid <= 0) {
+                throw new Error("Direct writer has no valid PostgreSQL backend PID.");
+              }
+
+              signalWriterPid();
+
+              return tx.$executeRawUnsafe(`
+                INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
+                VALUES ('product-race-writer', 'tenant-race', 'race-002', 'Racing writer', 10000, 0, 0, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+              `);
+            },
+            { maxWait: 5_000, timeout: 30_000 },
+          ).then(
             () => ({ ok: true }),
             (error) => ({ ok: false, error }),
           ).then((result) => {
             writerFinished = true;
             return result;
           });
+
+          // Avoid waiting indefinitely if the transaction fails before
+          // the backend PID can be captured.
+          const identityReady = await Promise.race([
+            writerPidReady.then(() => true),
+            writerOutcome.then(() => false),
+          ]);
+
+          if (!identityReady) {
+            throw new Error(
+              "Direct writer failed before its backend PID was captured.",
+            );
+          }
+
+          if (writerPid === migrationPid) {
+            throw new Error(
+              "Migration and writer unexpectedly share a backend PID.",
+            );
+          }
+
           const pendingWriterLock = await waitForLock(
             monitor,
             fixtureDatabaseName,
-            (lock) => lock.mode === "RowExclusiveLock" && lock.granted === false && Number(lock.pid) !== migrationPid,
-            "a pending RowExclusiveLock held by the direct writer",
+            (lock) =>
+              lock.mode === "RowExclusiveLock" &&
+              lock.granted === false &&
+              Number(lock.pid) === writerPid,
+            "a pending RowExclusiveLock belonging to the verified direct writer",
           );
-          writerPid = Number(pendingWriterLock.pid);
-          if (!Number.isInteger(writerPid) || writerPid <= 0) {
-            throw new Error(`Pending writer lock has an invalid backend PID: ${pendingWriterLock.pid}`);
+
+          if (Number(pendingWriterLock.pid) !== writerPid) {
+            throw new Error(
+              "Pending lock PID does not match the direct writer backend.",
+            );
           }
           if (writerFinished) {
             throw new Error("Writer completed despite a pending RowExclusiveLock observation.");
