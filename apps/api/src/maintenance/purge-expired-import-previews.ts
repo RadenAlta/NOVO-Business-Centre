@@ -2,6 +2,10 @@ import { prisma } from "../db.js";
 import { purgeExpiredImportPreviews } from "../import-preview-retention.js";
 
 async function main(): Promise<void> {
+  if (!process.env.DATABASE_URL?.trim()) {
+    throw new Error("Retention purge requires DATABASE_URL.");
+  }
+
   try {
     const deletedCount = await purgeExpiredImportPreviews();
 
