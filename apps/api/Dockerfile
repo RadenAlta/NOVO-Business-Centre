@@ -1,15 +1,17 @@
 FROM node:24-alpine AS build
+RUN apk add --no-cache openssl
 WORKDIR /app
 RUN corepack enable
-COPY package.json pnpm-workspace.yaml ./
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
-RUN pnpm install --filter @novo/api... --no-frozen-lockfile
+RUN pnpm install --filter @novo/api... --frozen-lockfile
 COPY packages/contracts packages/contracts
 COPY apps/api apps/api
 RUN pnpm --filter @novo/api prisma:generate && pnpm --filter @novo/api build
 
 FROM node:24-alpine
+RUN apk add --no-cache openssl
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
