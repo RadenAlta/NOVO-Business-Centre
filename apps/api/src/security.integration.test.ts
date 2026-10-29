@@ -423,6 +423,184 @@ describe("Sprint 04 Store response security", () => {
 });
 
 
+describe("Sprint 04 SKU raw-input API contract", () => {
+  it("rejects whitespace on product creation without side effects", async () => {
+    const account = await createAccount("sku-input-post");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const rejectedSkus = [
+      " ABC-001",
+      "ABC-001 ",
+      " ABC-001 ",
+      "\tABC-001",
+      "ABC-001\n",
+      "\u00A0ABC-001",
+      "ABC 001",
+    ];
+
+    for (const sku of rejectedSkus) {
+      await agent
+        .post("/api/v1/products")
+        .set("Origin", origin)
+        .set("X-Novo-Csrf", csrf)
+        .send({
+          sku,
+          name: "Rejected SKU Product",
+          unitPrice: 10000,
+          initialStock: 2,
+        })
+        .expect(400);
+    }
+
+    expect(
+      await prisma.product.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+
+    expect(
+      await prisma.stockMovement.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          tenantId: account.tenantId,
+          entityType: "Product",
+        },
+      }),
+    ).toBe(0);
+
+    const created = await agent
+      .post("/api/v1/products")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "abc-001",
+        name: "Valid SKU Product",
+        unitPrice: 10000,
+        initialStock: 2,
+      })
+      .expect(201);
+
+    expect(created.body.sku).toBe("ABC-001");
+
+    const persisted = await prisma.product.findUniqueOrThrow({
+      where: { id: created.body.id },
+    });
+
+    expect(persisted.sku).toBe("ABC-001");
+    expect(persisted.stockOnHand).toBe(2);
+  });
+
+  it("rejects whitespace on SKU updates while preserving tenant isolation", async () => {
+    const account = await createAccount("sku-input-patch");
+    const foreign = await createAccount("sku-input-foreign");
+
+    const agent = request.agent(app);
+    const foreignAgent = request.agent(app);
+
+    const signedIn = await login(agent, account);
+    const foreignSignedIn = await login(foreignAgent, foreign);
+
+    const csrf = signedIn.body.csrfToken as string;
+    const foreignCsrf = foreignSignedIn.body.csrfToken as string;
+
+    const created = await agent
+      .post("/api/v1/products")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "abc-001",
+        name: "Original SKU Product",
+        unitPrice: 10000,
+      })
+      .expect(201);
+
+    const foreignCreated = await foreignAgent
+      .post("/api/v1/products")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", foreignCsrf)
+      .send({
+        sku: "abc-001",
+        name: "Foreign SKU Product",
+        unitPrice: 10000,
+      })
+      .expect(201);
+
+    expect(created.body.sku).toBe("ABC-001");
+    expect(foreignCreated.body.sku).toBe("ABC-001");
+
+    const auditFilter = {
+      tenantId: account.tenantId,
+      entityType: "Product",
+      entityId: created.body.id,
+      action: "update",
+    };
+
+    const beforeAudits = await prisma.auditLog.count({
+      where: auditFilter,
+    });
+
+    for (const sku of [
+      " DEF-002",
+      "DEF-002 ",
+      " DEF-002 ",
+      "\tDEF-002",
+      "DEF-002\n",
+      "DEF 002",
+    ]) {
+      await agent
+        .patch("/api/v1/products/" + created.body.id)
+        .set("Origin", origin)
+        .set("X-Novo-Csrf", csrf)
+        .send({ sku })
+        .expect(400);
+
+      const persisted = await prisma.product.findUniqueOrThrow({
+        where: { id: created.body.id },
+      });
+
+      expect(persisted.sku).toBe("ABC-001");
+    }
+
+    expect(
+      await prisma.auditLog.count({ where: auditFilter }),
+    ).toBe(beforeAudits);
+
+    await foreignAgent
+      .patch("/api/v1/products/" + created.body.id)
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", foreignCsrf)
+      .send({ sku: "def-002" })
+      .expect(404);
+
+    const updated = await agent
+      .patch("/api/v1/products/" + created.body.id)
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ sku: "def-002" })
+      .expect(200);
+
+    expect(updated.body.sku).toBe("DEF-002");
+
+    const [ownProduct, foreignProduct] = await Promise.all([
+      prisma.product.findUniqueOrThrow({
+        where: { id: created.body.id },
+      }),
+      prisma.product.findUniqueOrThrow({
+        where: { id: foreignCreated.body.id },
+      }),
+    ]);
+
+    expect(ownProduct.sku).toBe("DEF-002");
+    expect(foreignProduct.sku).toBe("ABC-001");
+  });
+});
 describe("Sprint 04 Product and inventory integrity", () => {
   it("keeps tenant SKU uniqueness, lifecycle, stock balances, and movement history consistent", async () => {
     const account = await createAccount("inventory-integrity"); const other = await createAccount("inventory-integrity-other");

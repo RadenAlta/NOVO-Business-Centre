@@ -15,7 +15,7 @@ import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, re
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
-import { normalizeStoreSku, storeSkuPattern } from "./store-sku.js";
+import { storeSkuInput } from "./store-sku.js";
 import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
@@ -429,7 +429,6 @@ api.get("/products", requireRoles(...storeReadRoles), asyncRoute(async (request,
   response.json({ data, pagination: storePage(query.page, query.pageSize, filtered.length) });
 }));
 
-const storeSkuInput = z.string().trim().regex(storeSkuPattern, "SKU must use 2–50 ASCII letters, digits, dots, underscores, slashes, or hyphens.").transform(normalizeStoreSku);
 const storeProductInput = z.object({ sku: storeSkuInput, name: z.string().trim().min(2).max(160), description: z.string().trim().max(1000).nullable().optional(), categoryId: id.nullable().optional(), unitPrice: money.positive(), unitCost: money.nullable().optional(), reorderLevel: z.coerce.number().int().min(0).max(1000000).default(0), initialStock: z.coerce.number().int().min(0).max(1000000).default(0), active: z.boolean().optional() }).strict();
 const storeProductPatch = storeProductInput.omit({ initialStock: true }).partial().refine((value) => Object.keys(value).length > 0);
 async function storeCategoryId(tx: Prisma.TransactionClient, tenantId: string, categoryId: string | null | undefined): Promise<string | null | undefined> { if (categoryId === undefined || categoryId === null) return categoryId; const category = await tx.productCategory.findFirst({ where: { id: categoryId, tenantId, active: true }, select: { id: true } }); if (!category) throw new HttpError(400, "INVALID_CATEGORY", "Category must be active and belong to this workspace."); return category.id; }

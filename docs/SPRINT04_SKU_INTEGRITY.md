@@ -4,7 +4,7 @@
 
 A Product SKU is a 2–50 character ASCII identifier matching `[A-Z0-9][A-Z0-9._/-]{1,49}` in canonical storage. The API accepts lowercase input so it can return/store the canonical uppercase form. The database also requires byte length to equal character length, so a database write cannot exploit collation-dependent character ranges to store non-ASCII text.
 
-This restriction is deliberate: for the allowed ASCII alphabet, TypeScript `trim().toUpperCase()` and PostgreSQL `upper(btrim(sku))` have the same semantics. It removes locale- and Unicode-folding ambiguity from a financial/inventory identifier.
+This restriction is deliberate: the API validates the original, untrimmed ASCII input and then applies TypeScript `toUpperCase()`. PostgreSQL stores uppercase ASCII. The legacy migration uses `upper(btrim(sku))` only after its preflight rejects outer whitespace. This removes locale- and Unicode-folding ambiguity from financial/inventory identifiers.
 
 ## Safe deployment procedure
 
@@ -28,6 +28,6 @@ Prisma schema syntax can express the ordinary composite unique index but not thi
 
 `pnpm --filter @novo/api test:legacy-sku-migration` creates isolated disposable fixture databases only when its source database is the CI/test database (`novo_ci` or `novo_test`). It tests valid legacy canonicalization with preserved references/snapshots, invalid legacy failure/recovery, same-tenant collision failure without a chosen winner, cross-tenant reuse, and a two-connection Product-write race during the lock window. GitHub Actions runs this explicit stage before the ordinary `prisma migrate deploy` step.
 
-The API currently trims its input before canonicalization, while the migration/preflight rejects stored outer whitespace. That acceptance-policy mismatch is HIGH-02B and is deliberately deferred to CP4-D2-R2; no whitespace API behavior is changed by this atomicity checkpoint.
+CP4-D2-R2 changes API validation to reject leading and trailing whitespace before uppercase canonicalization. The product create and update routes share this strict schema. Endpoint regression testing and GitHub Actions acceptance remain required before HIGH-02B can be closed.
 
 The migration safety harness and PostgreSQL integration tests must run in GitHub Actions before HIGH-02A can be closed. Local source/type checks do not prove a migration against a database containing real legacy SKU data.
