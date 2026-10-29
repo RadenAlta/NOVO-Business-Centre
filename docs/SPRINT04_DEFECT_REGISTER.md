@@ -3,6 +3,6 @@
 | ID | Severity | Status | Evidence / next control |
 | --- | --- | --- | --- |
 | HIGH-01 | High | CLOSED (owner-reported CI 40491042299) | Role-aware Product HPP serializer and write authorization were independently reviewed before this checkpoint. |
-| HIGH-02A | High | CI PASS; audit sign-off pending | Migration, rollback, concurrent-write harness and preflight hardening passed GitHub Actions run 40802803159. Final audit sign-off remains required. |
+| HIGH-02A | High | CLOSED (CI 40810784095) | Migration atomicity, rollback, recovery, preflight failures, and concurrent writer backend PID verification passed PostgreSQL CI on commit 854b531. Production migration-history and legacy-data preflight remain deployment gates. |
 | HIGH-02B | High | CLOSED (CI 40797043782) | Strict raw SKU API validation and HTTP regression tests passed PostgreSQL CI. |
-| MED-01 | Medium | CODE PENDING CI; OPS OPEN | Global expired-preview purge command and PostgreSQL integration test are being implemented. Production scheduler installation and execution evidence remain mandatory. |
+| MED-01 | Medium | CODE CI PASS; OPS OPEN | Global expired-preview purge and cross-tenant PostgreSQL regression tests passed CI 40804418422. Production scheduling, monitoring, and execution evidence are still required before closure. |
