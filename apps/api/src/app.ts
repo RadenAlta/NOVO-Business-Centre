@@ -16,6 +16,7 @@ import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
 import { storeSkuInput } from "./store-sku.js";
+import { withStoreTransactionRetry } from "./store-transaction.js";
 import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
@@ -511,11 +512,13 @@ type StoreSalePayload = Prisma.SaleGetPayload<{ include: typeof storeSaleInclude
 function storeSaleResponse(sale: StoreSalePayload, includeHpp: boolean) { const base={id:sale.id,receiptNo:sale.receiptNo,status:sale.status,paymentMethod:sale.paymentMethod,total:asNumber(sale.total),occurredAt:sale.occurredAt,voidReason:sale.voidReason,voidedAt:sale.voidedAt,cashier:sale.cashier,payment:sale.payment===null?null:{method:sale.payment.method,status:sale.payment.status,amount:asNumber(sale.payment.amount),cashReceived:sale.payment.cashReceived===null?null:asNumber(sale.payment.cashReceived),changeGiven:sale.payment.changeGiven===null?null:asNumber(sale.payment.changeGiven),reference:sale.payment.reference,recordedAt:sale.payment.recordedAt}};const items=sale.items.map((item)=>({id:item.id,productId:item.productId,sku:item.productSku,name:item.productName,quantity:item.quantity,unitPrice:asNumber(item.unitPrice),subtotal:asNumber(item.subtotal),...(includeHpp?{unitCost:item.unitCost===null?null:asNumber(item.unitCost),costSubtotal:item.costSubtotal===null?null:asNumber(item.costSubtotal),grossMargin:item.grossMargin===null?null:asNumber(item.grossMargin)}:{})}));return {...base,items,...(includeHpp?{totalCost:sale.totalCost===null?null:asNumber(sale.totalCost),grossMargin:sale.grossMargin===null?null:asNumber(sale.grossMargin)}:{})}; }
 
 async function serializableStore<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try { return await prisma.$transaction(operation, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, maxWait: 5_000, timeout: 10_000 }); }
-    catch (error) { if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034" && attempt < 2) continue; throw error; }
-  }
-  throw new HttpError(409, "STORE_CONCURRENT_CONFLICT", "Inventory changed concurrently. Refresh the cart and try again.");
+  return withStoreTransactionRetry(() =>
+    prisma.$transaction(operation, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 5_000,
+      timeout: 10_000,
+    }),
+  );
 }
 api.post("/sales", requireRoles("OWNER", "ADMIN", "CASHIER", "SUPER_ADMIN"), asyncRoute(async (request, response) => {
   const input = storeCheckoutInput.parse(request.body);
