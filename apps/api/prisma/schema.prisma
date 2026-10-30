@@ -263,7 +263,10 @@ model StockMovement {
   productId     String
   quantity      Int
   reason        String
-  reference     String?
+  reference        String?
+  // Pair integrity is enforced by SQL CHECK; Prisma cannot model that constraint.
+  idempotencyKey   String?
+  inputFingerprint String?
   balanceAfter  Int?
   performedById String?
   saleId        String?
@@ -273,6 +276,7 @@ model StockMovement {
   performedBy   User?    @relation("StockMovementActor", fields: [performedById], references: [id], onDelete: SetNull)
   sale          Sale?    @relation(fields: [saleId], references: [id], onDelete: Restrict)
 
+  @@unique([tenantId, idempotencyKey])
   @@index([tenantId, productId, createdAt])
   @@index([tenantId, saleId])
 }
