@@ -1,3 +1,11 @@
+# Sprint 04 — final acceptance handoff
+
+- Branch/source checkpoint: `codex/sprint-04-store-pos-inventory` at `41c509b39e9b32297b4314586d8e0023923864fe`.
+- HIGH-01 and HIGH-02A/B are CLOSED with recorded hosted CI evidence. Store inventory idempotency is implemented in migration `202610290007_store_inventory_idempotency`.
+- Final validation evidence on 2026-11-02: Prisma validate/generate, API/Web builds, API/Web/Contracts type checks, Store/API non-database tests (47/47), Contracts tests (3/3), Web tests (13/13), security integration (35/35), and the legacy SKU migration harness passed. PostgreSQL work ran only through isolated `novo_test`.
+- Owner-provided staging evidence records `41c509b` deployed, seven applied migrations, health 200, Prisma-backed invalid-session validation, backup/restore verification, and no residual synthetic tenant/movement data. This session did not alter staging.
+- PR #4 is OPEN, non-draft, MERGEABLE/CLEAN at `41c509b`, with five listed checks SUCCESS. `reviewDecision` is empty; see `SPRINT04_FINAL_ACCEPTANCE.md` for the review checklist. Do not merge automatically.
+- FR-006 remains **partial** across the 86-requirement roadmap; MED-01 is staging-verified but remains production-operations OPEN before real personal-data processing.
 # CODEX Handoff — Sprint 03 PR #3 final XLSX hardening
 
 ## Git state

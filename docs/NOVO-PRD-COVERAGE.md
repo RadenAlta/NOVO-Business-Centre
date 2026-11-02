@@ -1,3 +1,6 @@
+# Sprint 04 CP4-D2 — Store SKU integrity update
+
+FR-006 remains **partial** in the 86-requirement project audit. HIGH-02A/B are CLOSED with recorded PostgreSQL CI evidence; Sprint 04 also includes inventory idempotency migration `202610290007_store_inventory_idempotency`. Owner-provided evidence records isolated `novo_test`, seven migrations, 35/35 security integration PASS, SKU harness PASS, deployed `41c509b`, staging health/auth-path validation, backup/restore verification, and PR #4 MERGEABLE/CLEAN with five checks SUCCESS. `reviewDecision` is empty; MED-01 remains production-operations OPEN.
 # NOVO PRD Coverage — Sprint 03 code-review corrections
 
 Scope: PR #3 corrections through baseline `28fa14a`, plus uncommitted HIGH-06/HIGH-07 hardening. The authoritative 86-row status remains [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md); no requirement is promoted to `verified` by source review alone.

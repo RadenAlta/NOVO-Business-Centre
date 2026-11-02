@@ -22,8 +22,8 @@ Errors share this shape:
 
 | Area | Endpoint | Purpose |
 | --- | --- | --- |
-| Master data | `GET/POST/PATCH /master-data`, `PATCH /master-data/:id/active`, `GET/POST /members`, `GET/POST /products`, `POST /products/:id/adjustments` | School identity directory, cooperative-member linkage, catalog and auditable inventory movement |
-| Store | `GET/POST /sales` | POS checkout atomically creates sale and negative stock movements |
+| Master data | `GET/POST/PATCH /master-data`, `PATCH /master-data/:id/active`, `GET/POST /members`, `GET/POST /products` | School identity directory, cooperative-member linkage, and product catalog |
+| Store | `GET/POST /sales`, `POST /sales/:id/void`, `POST /products/:id/receipts`, `POST /products/:id/adjustments`, `GET /products/:id/movements` | POS transactions, sale voids, stock receipts and adjustments, and auditable inventory history |
 | Shuttle | `GET/POST /shuttle/routes`, `GET/POST /shuttle/subscriptions`, `POST /shuttle/subscriptions/:id/invoices` | Route, subscription and billing flow |
 | Billing | `GET /billing/invoices`, `POST /billing/invoices/:id/payments` | Invoice collection with overpayment guard |
 | Catering | `GET/POST /catering/orders`, `PATCH /catering/orders/:id/status` | Catering order flow |
@@ -32,6 +32,37 @@ Errors share this shape:
 | Purchasing | `GET/POST /purchasing/requests` | Explicit procurement extension |
 | AI/Data | `GET /dashboard`, `POST /analytics/demand-forecast`, `GET/POST /knowledge-documents`, `POST /ai/assist`, `POST /assistant/chat` | Dashboard data, protected ML demand forecast, RAG context, provider-backed GenAI, ML-service RAG |
 | Governance | `POST /attachments`, `GET /attachments/:id/download`, `GET /audit-logs` | Signature-checked attachment upload, tenant-scoped download, and audit review |
+## Store inventory idempotency contract
+
+Both inventory mutation endpoints use the `/api/v1` base path:
+
+| Endpoint | Operation | Required browser headers |
+| --- | --- | --- |
+| `POST /products/:id/receipts` | Receive stock and record a `STOCK_RECEIPT` movement | `Idempotency-Key`, `X-Novo-Csrf`, trusted `Origin`/`Referer`, and session cookie |
+| `POST /products/:id/adjustments` | Adjust stock and record a `STOCK_ADJUSTMENT` movement | `Idempotency-Key`, `X-Novo-Csrf`, trusted `Origin`/`Referer`, and session cookie |
+
+The `Idempotency-Key` value is a trimmed ASCII string of 8-128 characters matching `[A-Za-z0-9][A-Za-z0-9._:-]{7,127}`. A missing or malformed key returns HTTP `400`.
+
+The key is scoped to the authenticated tenant, not to an individual product or endpoint. Tenant identity is resolved from the current session. The same key can be used independently by different tenants.
+
+Clients must generate a new key for each distinct inventory mutation and retain that key when retrying the *same* mutation. The operation, product ID, and normalized request fields contribute to a SHA-256 fingerprint. Receipt fingerprints include quantity, optional reference, and the unit-cost action/value; adjustment fingerprints include quantity, optional reference, and reason. Omitting a receipt unit-cost change is distinct from explicitly clearing its value.
+
+| Result | HTTP status | Behaviour |
+| --- | --- | --- |
+| First successful mutation | `201` | Updates stock and creates one movement and audit record |
+| Repeat with the same tenant, key, operation, and fingerprint | `200` | Returns the existing movement without applying stock changes or writing duplicate movement/audit records |
+| Reuse of a key for different input or a different inventory operation | `409 IDEMPOTENCY_KEY_REUSED` | Rejects the conflicting mutation without changing inventory |
+| Missing or invalid key | `400` | Rejects the request before performing an inventory mutation |
+
+Inventory writes use serializable database transactions. If an attempted mutation fails and its transaction rolls back, the key is not committed and the original request can be retried.
+
+`GET /products/:id/movements` returns tenant-scoped stock history and requires authentication, but no idempotency header. Internal `idempotencyKey` and `inputFingerprint` fields are excluded from public movement responses, including successful mutations and replays.
+
+A checkout idempotency key belongs to the separate `POST /sales` contract. A sale void is not a payment refund.
+
+## Store SKU contract
+
+`POST /products` and `PATCH /products/:id` accept only 2–50 character ASCII SKU values matching `[A-Za-z0-9][A-Za-z0-9._/-]{1,49}` and return/store their uppercase canonical form. The tenant-scoped Product uniqueness boundary is also enforced by PostgreSQL; clients must not depend on preservation of SKU letter case.
 
 ## Model-service contract
 

@@ -8,13 +8,16 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
 import path from "node:path";
 
-import type { Prisma } from "@prisma/client";
+import { Prisma, type StockMovement } from "@prisma/client";
 import { z } from "zod";
 import { audit } from "./audit.js";
 import { authenticate, clearSessionCookie, createBrowserSession, requireCsrf, requireRoles, requireTrustedOrigin, issueCsrfToken, revokeSessionForLogout, setSessionCookie } from "./auth.js";
 import { prisma } from "./db.js";
 import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
+import { storeSkuInput } from "./store-sku.js";
+import { fingerprintInventoryMutation, inventoryIdempotencyKeySchema } from "./store-inventory-idempotency.js";
+import { withStoreTransactionRetry } from "./store-transaction.js";
 import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
@@ -59,7 +62,7 @@ const decimalJson = <T>(value: T): T => JSON.parse(JSON.stringify(value, (_key, 
 
 app.disable("x-powered-by");
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-app.use(cors({ origin: env.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], allowedHeaders: ["Content-Type", "X-Novo-Csrf"], maxAge: 600 }));
+app.use(cors({ origin: env.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PUT", "PATCH", "DELETE"], allowedHeaders: ["Content-Type", "X-Novo-Csrf", "Idempotency-Key"], maxAge: 600 }));
 app.use(express.json({ limit: "1mb" }));
 
 
@@ -378,65 +381,386 @@ api.patch("/members/:id/active", requireRoles(...adminRoles), asyncRoute(async (
   });
   response.status(204).end();
 }));
-api.get("/products", asyncRoute(async (request, response) => {
-  const products = await prisma.product.findMany({
-    where: { tenantId: me(request).tenantId },
-    include: { movements: { select: { quantity: true } } },
-    orderBy: { name: "asc" },
-  });
-  response.json({ data: products.map(({ movements, ...product }) => ({ ...decimalJson(product), stock: movements.reduce((total, move) => total + move.quantity, 0) })) });
+const storeReadRoles: UserRole[] = ["OWNER", "ADMIN", "CASHIER", "FINANCE_OFFICER", "ANALYST", "SUPER_ADMIN", "CHAIRMAN", "TREASURER", "BUSINESS_DEVELOPMENT", "ADMIN_STAFF", "AUDITOR"];
+const storeManageRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "BUSINESS_DEVELOPMENT", "ADMIN_STAFF"];
+const storeHppRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "FINANCE_OFFICER", "TREASURER", "AUDITOR"];
+const canManageStoreHpp = (role: UserRole) => storeManageRoles.includes(role) && storeHppRoles.includes(role);
+const storeCategoryInput = z.object({ name: z.string().trim().min(2).max(120), description: z.string().trim().max(500).nullable().optional(), active: z.boolean().optional() }).strict();
+const storeCategoryQuery = z.object({ q: z.string().trim().max(120).optional(), active: z.enum(["true", "false"]).optional(), page: z.coerce.number().int().min(1).max(10000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).strict();
+const storePage = (page: number, pageSize: number, total: number) => ({ page, pageSize, total, pageCount: Math.ceil(total / pageSize) });
+api.get("/product-categories", requireRoles(...storeReadRoles), asyncRoute(async (request, response) => {
+  const query = storeCategoryQuery.parse(request.query); const where = { tenantId: me(request).tenantId, ...(query.active ? { active: query.active === "true" } : {}), ...(query.q ? { name: { contains: query.q, mode: "insensitive" as const } } : {}) };
+  const [total, data] = await prisma.$transaction([prisma.productCategory.count({ where }), prisma.productCategory.findMany({ where, orderBy: [{ name: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize })]); response.json({ data, pagination: storePage(query.page, query.pageSize, total) });
+}));
+api.post("/product-categories", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const input = storeCategoryInput.parse(request.body); const actor = me(request); const category = await serializableStore(async (tx) => { const created = await tx.productCategory.create({ data: { tenantId: actor.tenantId, ...input } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "ProductCategory", entityId: created.id, after: { name: created.name, active: created.active } } }); return created; }); response.status(201).json(category);
+}));
+api.patch("/product-categories/:id", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const categoryId = id.parse(request.params.id); const input = storeCategoryInput.partial().refine((value) => Object.keys(value).length > 0).parse(request.body); const actor = me(request); const category = await serializableStore(async (tx) => { const current = await tx.productCategory.findFirst({ where: { id: categoryId, tenantId: actor.tenantId } }); if (!current) throw new HttpError(404, "NOT_FOUND", "Product category not found."); const updated = await tx.productCategory.update({ where: { id: current.id }, data: input }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "update", entityType: "ProductCategory", entityId: updated.id, after: { name: updated.name, active: updated.active } } }); return updated; }); response.json(category);
 }));
 
-api.post("/products", requireRoles(...writeRoles), asyncRoute(async (request, response) => {
-  const input = z.object({ sku: z.string().trim().min(2).max(50), name: z.string().trim().min(2).max(160), description: z.string().trim().max(1000).optional(), unitPrice: money.positive(), reorderLevel: z.coerce.number().int().min(0).default(0), initialStock: z.coerce.number().int().min(0).default(0) }).parse(request.body);
-  const product = await prisma.$transaction(async (tx) => {
-    const created = await tx.product.create({ data: { tenantId: me(request).tenantId, sku: input.sku, name: input.name, description: input.description, unitPrice: input.unitPrice, reorderLevel: input.reorderLevel } });
-    if (input.initialStock > 0) await tx.stockMovement.create({ data: { tenantId: me(request).tenantId, productId: created.id, quantity: input.initialStock, reason: "INITIAL_STOCK", reference: makeReference("STK") } });
+const storeProductQuery = z.object({ q: z.string().trim().max(120).optional(), categoryId: id.optional(), active: z.enum(["true", "false"]).optional(), lowStock: z.enum(["true"]).optional(), page: z.coerce.number().int().min(1).max(10000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).strict();
+const storeProductInclude = { category: { select: { id: true, name: true, active: true } } } satisfies Prisma.ProductInclude;
+type StoreProductPayload = Prisma.ProductGetPayload<{ include: typeof storeProductInclude }>;
+function storeProductResponse(product: StoreProductPayload, includeHpp: boolean) {
+  return {
+    id: product.id,
+    sku: product.sku,
+    name: product.name,
+    description: product.description,
+    categoryId: product.categoryId,
+    category: product.category,
+    unitPrice: asNumber(product.unitPrice),
+    stockOnHand: product.stockOnHand,
+    stock: product.stockOnHand,
+    reorderLevel: product.reorderLevel,
+    active: product.active,
+    createdAt: product.createdAt,
+    updatedAt: product.updatedAt,
+    lowStock: product.stockOnHand <= product.reorderLevel,
+    ...(includeHpp ? { unitCost: product.unitCost === null ? null : asNumber(product.unitCost) } : {}),
+  };
+}
+api.get("/products", requireRoles(...storeReadRoles), asyncRoute(async (request, response) => {
+  const query = storeProductQuery.parse(request.query);
+  const actor = me(request);
+  const where = { tenantId: actor.tenantId, ...(query.categoryId ? { categoryId: query.categoryId } : {}), ...(query.active ? { active: query.active === "true" } : {}), ...(query.q ? { OR: [{ sku: { contains: query.q, mode: "insensitive" as const } }, { name: { contains: query.q, mode: "insensitive" as const } }] } : {}) };
+  const rows = await prisma.product.findMany({ where, include: storeProductInclude, orderBy: [{ name: "asc" }, { id: "asc" }] });
+  const filtered = query.lowStock ? rows.filter((product) => product.stockOnHand <= product.reorderLevel) : rows;
+  const data = filtered.slice((query.page - 1) * query.pageSize, query.page * query.pageSize).map((product) => storeProductResponse(product, storeHppRoles.includes(actor.role)));
+  response.json({ data, pagination: storePage(query.page, query.pageSize, filtered.length) });
+}));
+
+const storeProductInput = z.object({ sku: storeSkuInput, name: z.string().trim().min(2).max(160), description: z.string().trim().max(1000).nullable().optional(), categoryId: id.nullable().optional(), unitPrice: money.positive(), unitCost: money.nullable().optional(), reorderLevel: z.coerce.number().int().min(0).max(1000000).default(0), initialStock: z.coerce.number().int().min(0).max(1000000).default(0), active: z.boolean().optional() }).strict();
+const storeProductPatch = storeProductInput.omit({ initialStock: true }).partial().refine((value) => Object.keys(value).length > 0);
+async function storeCategoryId(tx: Prisma.TransactionClient, tenantId: string, categoryId: string | null | undefined): Promise<string | null | undefined> { if (categoryId === undefined || categoryId === null) return categoryId; const category = await tx.productCategory.findFirst({ where: { id: categoryId, tenantId, active: true }, select: { id: true } }); if (!category) throw new HttpError(400, "INVALID_CATEGORY", "Category must be active and belong to this workspace."); return category.id; }
+api.post("/products", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const input = storeProductInput.parse(request.body);
+  const actor = me(request);
+  if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot set product HPP.");
+  const product = await serializableStore(async (tx) => {
+    const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId);
+    const created = await tx.product.create({ data: { tenantId: actor.tenantId, sku: input.sku, name: input.name, description: input.description ?? null, categoryId: categoryId ?? null, unitPrice: new Prisma.Decimal(input.unitPrice), unitCost: input.unitCost === undefined || input.unitCost === null ? null : new Prisma.Decimal(input.unitCost), reorderLevel: input.reorderLevel, stockOnHand: input.initialStock, active: input.active ?? true }, include: storeProductInclude });
+    if (input.initialStock) await tx.stockMovement.create({ data: { tenantId: actor.tenantId, productId: created.id, quantity: input.initialStock, reason: "INITIAL_STOCK", reference: makeReference("STK"), balanceAfter: input.initialStock, performedById: actor.id } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "Product", entityId: created.id, after: { sku: created.sku, initialStock: input.initialStock } } });
     return created;
   });
-  await audit(me(request), "create", "Product", product.id, product);
-  response.status(201).json(decimalJson(product));
+  response.status(201).json(storeProductResponse(product, storeHppRoles.includes(actor.role)));
 }));
-
-api.post("/products/:id/adjustments", requireRoles(...writeRoles), asyncRoute(async (request, response) => {
+api.patch("/products/:id", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
   const productId = id.parse(request.params.id);
-  const input = z.object({ quantity: z.coerce.number().int().refine((value) => value !== 0, "Quantity cannot be zero."), reason: z.string().trim().min(3).max(160), reference: z.string().trim().max(80).optional() }).parse(request.body);
-  const product = await prisma.product.findFirst({ where: { id: productId, tenantId: me(request).tenantId } });
-  if (!product) throw new HttpError(404, "NOT_FOUND", "Product not found.");
-  const movement = await prisma.stockMovement.create({ data: { tenantId: me(request).tenantId, productId, quantity: input.quantity, reason: input.reason, reference: input.reference ?? makeReference("ADJ") } });
-  await audit(me(request), "adjust_stock", "Product", product.id, movement);
-  response.status(201).json(movement);
-}));
-
-api.get("/sales", requireRoles(...writeRoles), asyncRoute(async (request, response) => {
-  const sales = await prisma.sale.findMany({ where: { tenantId: me(request).tenantId }, include: { items: { include: { product: { select: { sku: true, name: true } } } }, cashier: { select: { name: true } } }, orderBy: { occurredAt: "desc" }, take: 100 });
-  response.json({ data: decimalJson(sales) });
-}));
-
-api.post("/sales", requireRoles("OWNER", "ADMIN", "CASHIER"), asyncRoute(async (request, response) => {
-  const input = z.object({ paymentMethod, items: z.array(z.object({ productId: id, quantity: z.coerce.number().int().positive().max(999) })).min(1).max(50) }).parse(request.body);
-  const quantities = new Map<string, number>();
-  for (const line of input.items) quantities.set(line.productId, (quantities.get(line.productId) ?? 0) + line.quantity);
-  const sale = await prisma.$transaction(async (tx) => {
-    const products = await tx.product.findMany({ where: { tenantId: me(request).tenantId, id: { in: [...quantities.keys()] }, active: true }, include: { movements: { select: { quantity: true } } } });
-    if (products.length !== quantities.size) throw new HttpError(400, "INVALID_PRODUCT", "One or more products are unavailable.");
-    const byId = new Map(products.map((product) => [product.id, product]));
-    const items = [...quantities.entries()].map(([productId, quantity]) => {
-      const product = byId.get(productId);
-      if (!product) throw new HttpError(400, "INVALID_PRODUCT", "Product is unavailable.");
-      const stock = product.movements.reduce((sum, movement) => sum + movement.quantity, 0);
-      if (stock < quantity) throw new HttpError(409, "INSUFFICIENT_STOCK", `${product.name} has only ${stock} unit(s) in stock.`);
-      const unitPrice = asNumber(product.unitPrice);
-      return { productId, quantity, unitPrice, subtotal: unitPrice * quantity };
-    });
-    const total = items.reduce((sum, item) => sum + item.subtotal, 0);
-    const created = await tx.sale.create({ data: { tenantId: me(request).tenantId, cashierId: me(request).id, receiptNo: makeReference("POS"), paymentMethod: input.paymentMethod, total, items: { create: items } }, include: { items: true } });
-    await tx.stockMovement.createMany({ data: items.map((item) => ({ tenantId: me(request).tenantId, productId: item.productId, quantity: -item.quantity, reason: "POS_SALE", reference: created.receiptNo })) });
-    return created;
+  const input = storeProductPatch.parse(request.body);
+  const actor = me(request);
+  if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot change product HPP.");
+  const product = await serializableStore(async (tx) => {
+    const current = await tx.product.findFirst({ where: { id: productId, tenantId: actor.tenantId } });
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Product not found.");
+    const categoryId = await storeCategoryId(tx, actor.tenantId, input.categoryId);
+    const updated = await tx.product.update({ where: { id: current.id }, data: { ...(input.sku === undefined ? {} : { sku: input.sku }), ...(input.name === undefined ? {} : { name: input.name }), ...(input.description === undefined ? {} : { description: input.description }), ...(categoryId === undefined ? {} : { categoryId }), ...(input.unitPrice === undefined ? {} : { unitPrice: new Prisma.Decimal(input.unitPrice) }), ...(input.unitCost === undefined ? {} : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }), ...(input.reorderLevel === undefined ? {} : { reorderLevel: input.reorderLevel }), ...(input.active === undefined ? {} : { active: input.active }) }, include: storeProductInclude });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "update", entityType: "Product", entityId: updated.id, after: { sku: updated.sku, active: updated.active } } });
+    return updated;
   });
-  await audit(me(request), "checkout", "Sale", sale.id, { receiptNo: sale.receiptNo, total: sale.total.toString() });
-  response.status(201).json(decimalJson(sale));
+  response.json(storeProductResponse(product, storeHppRoles.includes(actor.role)));
 }));
+function publicStockMovement<T extends StockMovement>(movement: T) {
+  const {
+    idempotencyKey: _idempotencyKey,
+    inputFingerprint: _inputFingerprint,
+    ...visibleMovement
+  } = movement;
+
+  return visibleMovement;
+}
+
+async function idempotentInventoryMutation(
+  tenantId: string,
+  idempotencyKey: string,
+  fingerprint: string,
+  mutate: (tx: Prisma.TransactionClient) => Promise<StockMovement>,
+): Promise<{ movement: StockMovement; replayed: boolean }> {
+  const verifyReplay = (existing: StockMovement) => {
+    if (existing.inputFingerprint !== fingerprint) {
+      throw new HttpError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "This idempotency key belongs to a different inventory operation.",
+      );
+    }
+
+    return { movement: existing, replayed: true };
+  };
+
+  try {
+    return await serializableStore(async (tx) => {
+      const existing = await tx.stockMovement.findFirst({
+        where: { tenantId, idempotencyKey },
+      });
+
+      if (existing) return verifyReplay(existing);
+
+      const movement = await mutate(tx);
+      return { movement, replayed: false };
+    });
+  } catch (error) {
+    // A concurrent request can commit the same key first.
+    // The failed transaction rolls back; inspect the committed row.
+    const duplicateKey =
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002";
+
+    const exhaustedConflict =
+      error instanceof HttpError &&
+      error.code === "STORE_CONCURRENT_CONFLICT";
+
+    if (!duplicateKey && !exhaustedConflict) throw error;
+
+    const existing = await prisma.stockMovement.findFirst({
+      where: { tenantId, idempotencyKey },
+    });
+
+    if (!existing) throw error;
+    return verifyReplay(existing);
+  }
+}
+
+api.post("/products/:id/receipts", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const productId = id.parse(request.params.id);
+  const input = z.object({ quantity: z.coerce.number().int().positive().max(1000000), reference: z.string().trim().min(3).max(80).optional(), unitCost: money.nullable().optional() }).strict().parse(request.body);
+  const idempotencyKey = inventoryIdempotencyKeySchema.parse(request.header("Idempotency-Key"));
+  const actor = me(request);
+
+  if (input.unitCost !== undefined && !canManageStoreHpp(actor.role)) {
+    throw new HttpError(403, "HPP_FORBIDDEN", "Your role cannot change product HPP.");
+  }
+
+  const fingerprint = fingerprintInventoryMutation({
+    operation: "STOCK_RECEIPT",
+    productId,
+    quantity: input.quantity,
+    reference: input.reference,
+    unitCost: input.unitCost,
+  });
+
+  const result = await idempotentInventoryMutation(
+    actor.tenantId,
+    idempotencyKey,
+    fingerprint,
+    async (tx) => {
+      const product = await tx.product.findFirst({
+        where: { id: productId, tenantId: actor.tenantId },
+      });
+
+      if (!product) throw new HttpError(404, "NOT_FOUND", "Product not found.");
+
+      const updated = await tx.product.update({
+        where: { id: product.id },
+        data: {
+          stockOnHand: { increment: input.quantity },
+          ...(input.unitCost === undefined
+            ? {}
+            : { unitCost: input.unitCost === null ? null : new Prisma.Decimal(input.unitCost) }),
+        },
+        select: { stockOnHand: true },
+      });
+
+      const created = await tx.stockMovement.create({
+        data: {
+          tenantId: actor.tenantId,
+          productId: product.id,
+          quantity: input.quantity,
+          reason: "STOCK_RECEIPT",
+          reference: input.reference ?? makeReference("RCV"),
+          balanceAfter: updated.stockOnHand,
+          performedById: actor.id,
+          idempotencyKey,
+          inputFingerprint: fingerprint,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: actor.tenantId,
+          actorId: actor.id,
+          action: "receive_stock",
+          entityType: "Product",
+          entityId: product.id,
+          after: {
+            movementId: created.id,
+            quantity: input.quantity,
+            balanceAfter: updated.stockOnHand,
+          },
+        },
+      });
+
+      return created;
+    },
+  );
+
+  response.status(result.replayed ? 200 : 201).json(
+    publicStockMovement(result.movement),
+  );
+}));
+api.post("/products/:id/adjustments", requireRoles(...storeManageRoles), asyncRoute(async (request, response) => {
+  const productId = id.parse(request.params.id);
+  const input = z.object({ quantity: z.coerce.number().int().min(-1_000_000).max(1_000_000).refine((value) => value !== 0, "Quantity cannot be zero."), reason: z.string().trim().min(3).max(160), reference: z.string().trim().min(3).max(80).optional() }).strict().parse(request.body);
+  const idempotencyKey = inventoryIdempotencyKeySchema.parse(request.header("Idempotency-Key"));
+  const actor = me(request);
+
+  const fingerprint = fingerprintInventoryMutation({
+    operation: "STOCK_ADJUSTMENT",
+    productId,
+    quantity: input.quantity,
+    reason: input.reason,
+    reference: input.reference,
+  });
+
+  const result = await idempotentInventoryMutation(
+    actor.tenantId,
+    idempotencyKey,
+    fingerprint,
+    async (tx) => {
+      const product = await tx.product.findFirst({
+        where: { id: productId, tenantId: actor.tenantId },
+        select: { id: true },
+      });
+
+      if (!product) throw new HttpError(404, "NOT_FOUND", "Product not found.");
+
+      let stockOnHand: number;
+
+      if (input.quantity < 0) {
+        const updated = await tx.product.updateMany({
+          where: {
+            id: product.id,
+            tenantId: actor.tenantId,
+            stockOnHand: { gte: Math.abs(input.quantity) },
+          },
+          data: {
+            stockOnHand: { decrement: Math.abs(input.quantity) },
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new HttpError(
+            409,
+            "INSUFFICIENT_STOCK",
+            "Stock adjustment cannot make inventory negative.",
+          );
+        }
+
+        stockOnHand = (await tx.product.findUniqueOrThrow({
+          where: { id: product.id },
+          select: { stockOnHand: true },
+        })).stockOnHand;
+      } else {
+        stockOnHand = (await tx.product.update({
+          where: { id: product.id },
+          data: { stockOnHand: { increment: input.quantity } },
+          select: { stockOnHand: true },
+        })).stockOnHand;
+      }
+
+      const created = await tx.stockMovement.create({
+        data: {
+          tenantId: actor.tenantId,
+          productId: product.id,
+          quantity: input.quantity,
+          reason: "STOCK_ADJUSTMENT: " + input.reason,
+          reference: input.reference ?? makeReference("ADJ"),
+          balanceAfter: stockOnHand,
+          performedById: actor.id,
+          idempotencyKey,
+          inputFingerprint: fingerprint,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId: actor.tenantId,
+          actorId: actor.id,
+          action: "adjust_stock",
+          entityType: "Product",
+          entityId: product.id,
+          after: {
+            movementId: created.id,
+            quantity: input.quantity,
+            reason: input.reason,
+            balanceAfter: stockOnHand,
+          },
+        },
+      });
+
+      return created;
+    },
+  );
+
+  response.status(result.replayed ? 200 : 201).json(
+    publicStockMovement(result.movement),
+  );
+}));
+
+api.get("/products/:id/movements", requireRoles(...storeReadRoles), asyncRoute(async(request,response)=>{const productId=id.parse(request.params.id);const query=z.object({page:z.coerce.number().int().min(1).default(1),pageSize:z.coerce.number().int().min(1).max(100).default(50)}).parse(request.query);const actor=me(request);if(!await prisma.product.findFirst({where:{id:productId,tenantId:actor.tenantId},select:{id:true}}))throw new HttpError(404,"NOT_FOUND","Product not found.");const where={tenantId:actor.tenantId,productId};const [total,data]=await prisma.$transaction([prisma.stockMovement.count({where}),prisma.stockMovement.findMany({where,include:{performedBy:{select:{name:true}}},orderBy:[{createdAt:"desc"},{id:"desc"}],skip:(query.page-1)*query.pageSize,take:query.pageSize})]);response.json({data:data.map(publicStockMovement),pagination:storePage(query.page,query.pageSize,total)});}));
+
+const storeSaleQuery = z.object({ q: z.string().trim().max(120).optional(), status: z.enum(["COMPLETED", "VOIDED"]).optional(), page: z.coerce.number().int().min(1).max(10000).default(1), pageSize: z.coerce.number().int().min(1).max(100).default(50) }).strict();
+api.get("/sales", requireRoles(...storeReadRoles), asyncRoute(async (request, response) => { const query=storeSaleQuery.parse(request.query); const where={tenantId:me(request).tenantId,...(query.status?{status:query.status}:{}),...(query.q?{receiptNo:{contains:query.q,mode:"insensitive" as const}}:{})}; const [total,data]=await prisma.$transaction([prisma.sale.count({where}),prisma.sale.findMany({where,include:storeSaleInclude,orderBy:[{occurredAt:"desc"},{id:"desc"}],skip:(query.page-1)*query.pageSize,take:query.pageSize})]); response.json({data:data.map((sale)=>storeSaleResponse(sale,storeHppRoles.includes(me(request).role))),pagination:storePage(query.page,query.pageSize,total)}); }));
+
+const storeCheckoutInput = z.object({ paymentMethod: z.enum(["CASH", "TRANSFER", "QRIS"]), cashReceived: money.optional(), paymentReference: z.string().trim().min(3).max(100).optional(), customerIdentityId: id.optional(), items: z.array(z.object({ productId: id, quantity: z.coerce.number().int().positive().max(999) }).strict()).min(1).max(50) }).strict().superRefine((input, context) => {
+  if (input.paymentMethod === "CASH" && input.cashReceived === undefined) context.addIssue({ code: "custom", path: ["cashReceived"], message: "Cash received is required." });
+  if (input.paymentMethod !== "CASH" && !input.paymentReference) context.addIssue({ code: "custom", path: ["paymentReference"], message: "A transfer or QRIS reference is required." });
+});
+const storeSaleInclude = { items: { include: { product: { select: { sku: true, name: true } } } }, payment: true, cashier: { select: { name: true } } } satisfies Prisma.SaleInclude;
+type StoreSalePayload = Prisma.SaleGetPayload<{ include: typeof storeSaleInclude }>;
+function storeSaleResponse(sale: StoreSalePayload, includeHpp: boolean) { const base={id:sale.id,receiptNo:sale.receiptNo,status:sale.status,paymentMethod:sale.paymentMethod,total:asNumber(sale.total),occurredAt:sale.occurredAt,voidReason:sale.voidReason,voidedAt:sale.voidedAt,cashier:sale.cashier,payment:sale.payment===null?null:{method:sale.payment.method,status:sale.payment.status,amount:asNumber(sale.payment.amount),cashReceived:sale.payment.cashReceived===null?null:asNumber(sale.payment.cashReceived),changeGiven:sale.payment.changeGiven===null?null:asNumber(sale.payment.changeGiven),reference:sale.payment.reference,recordedAt:sale.payment.recordedAt}};const items=sale.items.map((item)=>({id:item.id,productId:item.productId,sku:item.productSku,name:item.productName,quantity:item.quantity,unitPrice:asNumber(item.unitPrice),subtotal:asNumber(item.subtotal),...(includeHpp?{unitCost:item.unitCost===null?null:asNumber(item.unitCost),costSubtotal:item.costSubtotal===null?null:asNumber(item.costSubtotal),grossMargin:item.grossMargin===null?null:asNumber(item.grossMargin)}:{})}));return {...base,items,...(includeHpp?{totalCost:sale.totalCost===null?null:asNumber(sale.totalCost),grossMargin:sale.grossMargin===null?null:asNumber(sale.grossMargin)}:{})}; }
+
+async function serializableStore<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return withStoreTransactionRetry(() =>
+    prisma.$transaction(operation, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 5_000,
+      timeout: 10_000,
+    }),
+  );
+}
+api.post("/sales", requireRoles("OWNER", "ADMIN", "CASHIER", "SUPER_ADMIN"), asyncRoute(async (request, response) => {
+  const input = storeCheckoutInput.parse(request.body);
+  const idempotencyKey = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/).parse(request.header("Idempotency-Key"));
+  const quantities = new Map<string, number>();
+  for (const line of input.items) { const next = (quantities.get(line.productId) ?? 0) + line.quantity; if (next > 999) throw new HttpError(400, "INVALID_QUANTITY", "A product quantity cannot exceed 999."); quantities.set(line.productId, next); }
+  const canonical = { paymentMethod: input.paymentMethod, cashReceived: input.cashReceived ?? null, paymentReference: input.paymentReference ?? null, customerIdentityId: input.customerIdentityId ?? null, items: [...quantities.entries()].sort(([a], [b]) => a.localeCompare(b)) };
+  const fingerprint = createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+  const actor = me(request);
+  let result: { sale: Prisma.SaleGetPayload<{ include: typeof storeSaleInclude }>; replayed: boolean };
+  try {
+    result = await serializableStore(async (tx) => {
+      const existing = await tx.sale.findFirst({ where: { tenantId: actor.tenantId, idempotencyKey }, include: storeSaleInclude });
+      if (existing) { if (existing.inputFingerprint !== fingerprint) throw new HttpError(409, "IDEMPOTENCY_KEY_REUSED", "This idempotency key belongs to a different checkout."); return { sale: existing, replayed: true }; }
+      if (input.customerIdentityId) { const customer = await tx.masterDataRecord.findFirst({ where: { id: input.customerIdentityId, tenantId: actor.tenantId, active: true, type: "STUDENT" }, select: { id: true } }); if (!customer) throw new HttpError(400, "INVALID_CUSTOMER", "Customer must be an active student from this workspace."); }
+      const productIds = [...quantities.keys()].sort();
+      const products = await tx.product.findMany({ where: { tenantId: actor.tenantId, id: { in: productIds }, active: true }, orderBy: { id: "asc" } });
+      if (products.length !== productIds.length) throw new HttpError(400, "INVALID_PRODUCT", "One or more products are unavailable.");
+      const byId = new Map(products.map((product) => [product.id, product]));
+      const items = productIds.map((productId) => { const product = byId.get(productId); const quantity = quantities.get(productId); if (!product || quantity === undefined) throw new HttpError(400, "INVALID_PRODUCT", "Product is unavailable."); const unitPrice = new Prisma.Decimal(product.unitPrice); const subtotal = unitPrice.mul(quantity).toDecimalPlaces(2); const unitCost = product.unitCost === null ? null : new Prisma.Decimal(product.unitCost); const costSubtotal = unitCost === null ? null : unitCost.mul(quantity).toDecimalPlaces(2); return { productId: product.id, productSku: product.sku, productName: product.name, quantity, unitPrice, subtotal, unitCost, costSubtotal, grossMargin: costSubtotal === null ? null : subtotal.sub(costSubtotal).toDecimalPlaces(2) }; });
+      const total = items.reduce((sum, item) => sum.add(item.subtotal), new Prisma.Decimal(0)).toDecimalPlaces(2);
+      const totalCost = items.some((item) => item.costSubtotal === null) ? null : items.reduce((sum, item) => sum.add(item.costSubtotal ?? new Prisma.Decimal(0)), new Prisma.Decimal(0)).toDecimalPlaces(2);
+      const cashReceived = input.paymentMethod === "CASH" ? new Prisma.Decimal(input.cashReceived ?? 0).toDecimalPlaces(2) : null;
+      if (cashReceived !== null && cashReceived.lessThan(total)) throw new HttpError(400, "INSUFFICIENT_CASH", "Cash received is below the server total.");
+      const created = await tx.sale.create({ data: { tenantId: actor.tenantId, cashierId: actor.id, customerIdentityId: input.customerIdentityId, idempotencyKey, inputFingerprint: fingerprint, receiptNo: makeReference("POS"), paymentMethod: input.paymentMethod, total, totalCost, grossMargin: totalCost === null ? null : total.sub(totalCost).toDecimalPlaces(2), items: { create: items.map((item) => ({ product: { connect: { id: item.productId } }, productSku: item.productSku, productName: item.productName, quantity: item.quantity, unitPrice: item.unitPrice, subtotal: item.subtotal, unitCost: item.unitCost, costSubtotal: item.costSubtotal, grossMargin: item.grossMargin })) } }, include: storeSaleInclude });
+      for (const item of items) { const changed = await tx.product.updateMany({ where: { id: item.productId, tenantId: actor.tenantId, active: true, stockOnHand: { gte: item.quantity } }, data: { stockOnHand: { decrement: item.quantity } } }); if (changed.count !== 1) throw new HttpError(409, "INSUFFICIENT_STOCK", item.productName + " no longer has sufficient stock."); const product = await tx.product.findUniqueOrThrow({ where: { id: item.productId }, select: { stockOnHand: true } }); await tx.stockMovement.create({ data: { tenantId: actor.tenantId, productId: item.productId, saleId: created.id, quantity: -item.quantity, reason: "POS_SALE", reference: created.receiptNo, balanceAfter: product.stockOnHand, performedById: actor.id } }); }
+      await tx.storePayment.create({ data: { tenantId: actor.tenantId, saleId: created.id, recordedById: actor.id, method: input.paymentMethod, amount: total, cashReceived, changeGiven: cashReceived === null ? null : cashReceived.sub(total).toDecimalPlaces(2), reference: input.paymentMethod === "CASH" ? null : input.paymentReference } });
+      await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "checkout", entityType: "Sale", entityId: created.id, after: { receiptNo: created.receiptNo, total: total.toString(), paymentMethod: input.paymentMethod, itemCount: items.length } } });
+      return { sale: await tx.sale.findUniqueOrThrow({ where: { id: created.id }, include: storeSaleInclude }), replayed: false };
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") { const existing = await prisma.sale.findFirst({ where: { tenantId: actor.tenantId, idempotencyKey }, include: storeSaleInclude }); if (existing?.inputFingerprint === fingerprint) result = { sale: existing, replayed: true }; else if (existing) throw new HttpError(409, "IDEMPOTENCY_KEY_REUSED", "This idempotency key belongs to a different checkout."); else throw error; } else throw error;
+  }
+  response.status(result.replayed ? 200 : 201).json({ ...storeSaleResponse(result.sale, storeHppRoles.includes(actor.role)), idempotentReplay: result.replayed });
+}));
+
+const storeVoidRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "BUSINESS_DEVELOPMENT"];
+async function storeSaleForTenant(saleId: string, tenantId: string) { return prisma.sale.findFirst({ where: { id: saleId, tenantId }, include: storeSaleInclude }); }
+api.get("/sales/:id", requireRoles(...storeReadRoles), asyncRoute(async (request,response)=>{const sale=await storeSaleForTenant(id.parse(request.params.id),me(request).tenantId);if(!sale)throw new HttpError(404,"NOT_FOUND","Sale not found.");response.json(storeSaleResponse(sale,storeHppRoles.includes(me(request).role)));}));
+api.get("/sales/:id/receipt", requireRoles(...storeReadRoles), asyncRoute(async (request,response)=>{const sale=await storeSaleForTenant(id.parse(request.params.id),me(request).tenantId);if(!sale)throw new HttpError(404,"NOT_FOUND","Sale not found.");response.json({printable:true,receipt:storeSaleResponse(sale,false)});}));
+api.post("/sales/:id/void", requireRoles(...storeVoidRoles), asyncRoute(async (request,response)=>{const saleId=id.parse(request.params.id);const input=z.object({reason:z.string().trim().min(5).max(500)}).strict().parse(request.body);const actor=me(request);const sale=await serializableStore(async(tx)=>{const current=await tx.sale.findFirst({where:{id:saleId,tenantId:actor.tenantId},include:{items:true}});if(!current)throw new HttpError(404,"NOT_FOUND","Sale not found.");const claimed=await tx.sale.updateMany({where:{id:current.id,tenantId:actor.tenantId,status:"COMPLETED"},data:{status:"VOIDED",voidReason:input.reason,voidedAt:new Date(),voidedById:actor.id}});if(claimed.count!==1)throw new HttpError(409,"SALE_ALREADY_VOIDED","This sale was already voided.");for(const item of current.items){const product=await tx.product.update({where:{id:item.productId},data:{stockOnHand:{increment:item.quantity}},select:{stockOnHand:true}});await tx.stockMovement.create({data:{tenantId:actor.tenantId,productId:item.productId,saleId:current.id,quantity:item.quantity,reason:"POS_VOID",reference:current.receiptNo,balanceAfter:product.stockOnHand,performedById:actor.id}});}await tx.auditLog.create({data:{tenantId:actor.tenantId,actorId:actor.id,action:"void",entityType:"Sale",entityId:current.id,after:{receiptNo:current.receiptNo,reason:input.reason}}});return tx.sale.findUniqueOrThrow({where:{id:current.id},include:storeSaleInclude});});response.json(storeSaleResponse(sale,storeHppRoles.includes(actor.role)));}));
 
 api.get("/shuttle/routes", asyncRoute(async (request, response) => {
   response.json({ data: decimalJson(await prisma.shuttleRoute.findMany({ where: { tenantId: me(request).tenantId }, orderBy: { name: "asc" } })) });

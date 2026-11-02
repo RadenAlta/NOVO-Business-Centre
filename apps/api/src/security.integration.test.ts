@@ -2,12 +2,14 @@ import bcrypt from "bcryptjs";
 import ExcelJS from "exceljs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
+import { Prisma } from "@prisma/client";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { app } from "./app.js";
 import { hashSecret } from "./auth.js";
 import { prisma } from "./db.js";
+import { purgeExpiredImportPreviews } from "./import-preview-retention.js";
 import { env } from "./env.js";
 import { masterDataColumns, toExcelJsBuffer } from "./master-data-import.js";
 
@@ -35,6 +37,12 @@ function binaryResponseParser(response: request.Response, callback: (error: Erro
 }
 
 async function clearTestData(): Promise<void> {
+  await prisma.storePayment.deleteMany();
+  await prisma.stockMovement.deleteMany();
+  await prisma.saleItem.deleteMany();
+  await prisma.sale.deleteMany();
+  await prisma.product.deleteMany();
+  await prisma.productCategory.deleteMany();
   await prisma.savingsLedgerEntry.deleteMany();
   await prisma.savingsAccount.deleteMany();
   await prisma.cooperativeMember.deleteMany();
@@ -359,4 +367,1159 @@ describe("Sprint 03 Master Data, secure spreadsheet import, and membership", () 
     await agent.post("/api/v1/master-data/imports/preview").set("Origin", origin).set("X-Novo-Csrf", csrfToken).attach("file", Buffer.from("not a workbook"), { filename: "bad.xlsx", contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }).expect(400);
     await agent.post("/api/v1/master-data/imports/commit").set("Origin", origin).set("X-Novo-Csrf", csrfToken).send({ previewId: simsPreview.body.previewId, fingerprint: "0".repeat(64) }).expect(409);
   });
+});
+
+describe("Sprint 04 Store response security", () => {
+  it("enforces Store RBAC, tenant isolation, CSRF, category ownership, and HPP redaction", async () => {
+    const owner = await createAccount("store-security-owner");
+    const other = await createAccount("store-security-other");
+    const cashier = await createTenantUser(owner, "store-security-cashier");
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "CASHIER" } });
+    const ownerAgent = request.agent(app);
+    const otherAgent = request.agent(app);
+    const cashierAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    const otherLogin = await login(otherAgent, other);
+    const cashierLogin = await login(cashierAgent, cashier);
+    const ownerCsrf = ownerLogin.body.csrfToken as string;
+    const otherCsrf = otherLogin.body.csrfToken as string;
+    const cashierCsrf = cashierLogin.body.csrfToken as string;
+
+    await ownerAgent.post("/api/v1/product-categories").set("Origin", origin).send({ name: "No CSRF" }).expect(403);
+    const category = await ownerAgent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ name: "Synthetic Category" }).expect(201);
+    const foreignCategory = await otherAgent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ name: "Other Category" }).expect(201);
+    await cashierAgent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", cashierCsrf).send({ name: "Cashier Cannot Create" }).expect(403);
+    await otherAgent.patch("/api/v1/product-categories/" + category.body.id).set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ active: false }).expect(404);
+
+    await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPP-SEC-01", name: "Synthetic HPP Product", categoryId: foreignCategory.body.id, unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(400);
+    const product = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPP-SEC-01", name: "Synthetic HPP Product", categoryId: category.body.id, unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(201);
+    await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "hpp-sec-01", name: "Duplicate", unitPrice: 1 }).expect(409);
+    await otherAgent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ active: false }).expect(404);
+
+    const checkout = await cashierAgent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", cashierCsrf).set("Idempotency-Key", "store-security-checkout-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+    expect(checkout.body).not.toHaveProperty("totalCost");
+    expect(checkout.body).not.toHaveProperty("grossMargin");
+    expect(checkout.body.items[0]).not.toHaveProperty("unitCost");
+    expect(checkout.body.items[0]).not.toHaveProperty("costSubtotal");
+    expect(checkout.body.items[0]).not.toHaveProperty("grossMargin");
+    await otherAgent.get("/api/v1/sales/" + checkout.body.id).expect(404);
+    await otherAgent.get("/api/v1/sales/" + checkout.body.id + "/receipt").expect(404);
+
+    const cashierHistory = await cashierAgent.get("/api/v1/sales").expect(200);
+    expect(cashierHistory.body.data[0]).not.toHaveProperty("totalCost");
+    expect(cashierHistory.body.data[0].items[0]).not.toHaveProperty("unitCost");
+    const receipt = await cashierAgent.get("/api/v1/sales/" + checkout.body.id + "/receipt").expect(200);
+    expect(JSON.stringify(receipt.body)).not.toContain("unitCost");
+    expect(JSON.stringify(receipt.body)).not.toContain("grossMargin");
+
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "FINANCE_OFFICER" } });
+    const finance = await cashierAgent.get("/api/v1/sales/" + checkout.body.id).expect(200);
+    expect(finance.body.totalCost).toBe(4000);
+    expect(finance.body.grossMargin).toBe(6000);
+    expect(finance.body.items[0].unitCost).toBe(4000);
+    const financeReceipt = await cashierAgent.get("/api/v1/sales/" + checkout.body.id + "/receipt").expect(200);
+    expect(JSON.stringify(financeReceipt.body)).not.toContain("unitCost");
+    expect(JSON.stringify(financeReceipt.body)).not.toContain("grossMargin");
+  });
+});
+
+
+describe("MED-01 structured import preview retention", () => {
+  it("purges expired previews across tenants and users without deleting active previews", async () => {
+    const primary = await createAccount("retention-primary");
+    const secondUser = await createTenantUser(
+      primary,
+      "retention-second-user",
+    );
+    const foreign = await createAccount("retention-foreign");
+
+    const cutoff = new Date("2030-01-01T12:00:00.000Z");
+    const expired = new Date(cutoff.getTime() - 1000);
+    const active = new Date(cutoff.getTime() + 1000);
+
+    async function makePreview(
+      tenantId: string,
+      createdById: string,
+      expiresAt: Date,
+      consumedAt: Date | null = null,
+    ) {
+      return prisma.masterDataImportPreview.create({
+        data: {
+          tenantId,
+          createdById,
+          fingerprint: "a".repeat(64),
+          payload: {
+            rows: [
+              {
+                identifier: "SYNTHETIC-001",
+                fullName: "Synthetic Retention Fixture",
+              },
+            ],
+            issues: [],
+          },
+          expiresAt,
+          consumedAt,
+        },
+      });
+    }
+
+    const expiredOwner = await makePreview(
+      primary.tenantId,
+      primary.userId,
+      expired,
+    );
+
+    const expiredSecondUser = await makePreview(
+      primary.tenantId,
+      secondUser.userId,
+      expired,
+      new Date(cutoff.getTime() - 30000),
+    );
+
+    const expiredForeign = await makePreview(
+      foreign.tenantId,
+      foreign.userId,
+      expired,
+    );
+
+    const expiredAtBoundary = await makePreview(
+      foreign.tenantId,
+      foreign.userId,
+      cutoff,
+    );
+
+    const activeOwner = await makePreview(
+      primary.tenantId,
+      primary.userId,
+      active,
+    );
+
+    const activeForeign = await makePreview(
+      foreign.tenantId,
+      foreign.userId,
+      active,
+    );
+
+    expect(await purgeExpiredImportPreviews(cutoff)).toBe(4);
+
+    for (const preview of [
+      expiredOwner,
+      expiredSecondUser,
+      expiredForeign,
+      expiredAtBoundary,
+    ]) {
+      expect(
+        await prisma.masterDataImportPreview.findUnique({
+          where: { id: preview.id },
+        }),
+      ).toBeNull();
+    }
+
+    const retained = await prisma.masterDataImportPreview.findMany({
+      select: { id: true },
+    });
+
+    expect(retained.map((row) => row.id).sort()).toEqual(
+      [activeOwner.id, activeForeign.id].sort(),
+    );
+
+    const activePayload =
+      await prisma.masterDataImportPreview.findUniqueOrThrow({
+        where: { id: activeOwner.id },
+      });
+
+    expect(activePayload.payload).toMatchObject({
+      rows: [{ fullName: "Synthetic Retention Fixture" }],
+    });
+
+    expect(await purgeExpiredImportPreviews(cutoff)).toBe(0);
+
+    expect(await prisma.masterDataRecord.count()).toBe(0);
+  });
+});
+describe("Sprint 04 SKU raw-input API contract", () => {
+  it("rejects whitespace on product creation without side effects", async () => {
+    const account = await createAccount("sku-input-post");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const rejectedSkus = [
+      " ABC-001",
+      "ABC-001 ",
+      " ABC-001 ",
+      "\tABC-001",
+      "ABC-001\n",
+      "\u00A0ABC-001",
+      "ABC 001",
+    ];
+
+    for (const sku of rejectedSkus) {
+      await agent
+        .post("/api/v1/products")
+        .set("Origin", origin)
+        .set("X-Novo-Csrf", csrf)
+        .send({
+          sku,
+          name: "Rejected SKU Product",
+          unitPrice: 10000,
+          initialStock: 2,
+        })
+        .expect(400);
+    }
+
+    expect(
+      await prisma.product.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+
+    expect(
+      await prisma.stockMovement.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          tenantId: account.tenantId,
+          entityType: "Product",
+        },
+      }),
+    ).toBe(0);
+
+    const created = await agent
+      .post("/api/v1/products")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "abc-001",
+        name: "Valid SKU Product",
+        unitPrice: 10000,
+        initialStock: 2,
+      })
+      .expect(201);
+
+    expect(created.body.sku).toBe("ABC-001");
+
+    const persisted = await prisma.product.findUniqueOrThrow({
+      where: { id: created.body.id },
+    });
+
+    expect(persisted.sku).toBe("ABC-001");
+    expect(persisted.stockOnHand).toBe(2);
+  });
+
+  it("rejects whitespace on SKU updates while preserving tenant isolation", async () => {
+    const account = await createAccount("sku-input-patch");
+    const foreign = await createAccount("sku-input-foreign");
+
+    const agent = request.agent(app);
+    const foreignAgent = request.agent(app);
+
+    const signedIn = await login(agent, account);
+    const foreignSignedIn = await login(foreignAgent, foreign);
+
+    const csrf = signedIn.body.csrfToken as string;
+    const foreignCsrf = foreignSignedIn.body.csrfToken as string;
+
+    const created = await agent
+      .post("/api/v1/products")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "abc-001",
+        name: "Original SKU Product",
+        unitPrice: 10000,
+      })
+      .expect(201);
+
+    const foreignCreated = await foreignAgent
+      .post("/api/v1/products")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", foreignCsrf)
+      .send({
+        sku: "abc-001",
+        name: "Foreign SKU Product",
+        unitPrice: 10000,
+      })
+      .expect(201);
+
+    expect(created.body.sku).toBe("ABC-001");
+    expect(foreignCreated.body.sku).toBe("ABC-001");
+
+    const auditFilter = {
+      tenantId: account.tenantId,
+      entityType: "Product",
+      entityId: created.body.id,
+      action: "update",
+    };
+
+    const beforeAudits = await prisma.auditLog.count({
+      where: auditFilter,
+    });
+
+    for (const sku of [
+      " DEF-002",
+      "DEF-002 ",
+      " DEF-002 ",
+      "\tDEF-002",
+      "DEF-002\n",
+      "DEF 002",
+    ]) {
+      await agent
+        .patch("/api/v1/products/" + created.body.id)
+        .set("Origin", origin)
+        .set("X-Novo-Csrf", csrf)
+        .send({ sku })
+        .expect(400);
+
+      const persisted = await prisma.product.findUniqueOrThrow({
+        where: { id: created.body.id },
+      });
+
+      expect(persisted.sku).toBe("ABC-001");
+    }
+
+    expect(
+      await prisma.auditLog.count({ where: auditFilter }),
+    ).toBe(beforeAudits);
+
+    await foreignAgent
+      .patch("/api/v1/products/" + created.body.id)
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", foreignCsrf)
+      .send({ sku: "def-002" })
+      .expect(404);
+
+    const updated = await agent
+      .patch("/api/v1/products/" + created.body.id)
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ sku: "def-002" })
+      .expect(200);
+
+    expect(updated.body.sku).toBe("DEF-002");
+
+    const [ownProduct, foreignProduct] = await Promise.all([
+      prisma.product.findUniqueOrThrow({
+        where: { id: created.body.id },
+      }),
+      prisma.product.findUniqueOrThrow({
+        where: { id: foreignCreated.body.id },
+      }),
+    ]);
+
+    expect(ownProduct.sku).toBe("DEF-002");
+    expect(foreignProduct.sku).toBe("ABC-001");
+  });
+});
+describe("Sprint 04 Product and inventory integrity", () => {
+  it("keeps tenant SKU uniqueness, lifecycle, stock balances, and movement history consistent", async () => {
+    const account = await createAccount("inventory-integrity"); const other = await createAccount("inventory-integrity-other");
+    const agent = request.agent(app); const otherAgent = request.agent(app);
+    const loginResult = await login(agent, account); const csrf = loginResult.body.csrfToken as string;
+    const otherLogin = await login(otherAgent, other); const otherCsrf = otherLogin.body.csrfToken as string;
+    const category = await agent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ name: "Inventory" }).expect(201);
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "INV-001", name: "Synthetic Inventory", categoryId: category.body.id, unitPrice: 10000, unitCost: 5000, reorderLevel: 3, initialStock: 5 }).expect(201);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(5);
+    await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "inv-001", name: "Duplicate", unitPrice: 1 }).expect(409);
+    await otherAgent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", otherCsrf).send({ active: false }).expect(404);
+    await agent.post("/api/v1/products/" + product.body.id + "/receipts").set("Idempotency-Key", "inventory-legacy-001").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: 4, reference: "RCV-TEST" }).expect(201);
+    await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Idempotency-Key", "inventory-legacy-002").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -2, reason: "Synthetic count" }).expect(201);
+    await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Idempotency-Key", "inventory-legacy-003").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -99, reason: "Rejected negative" }).expect(409);
+    const persisted = await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } }); expect(persisted.stockOnHand).toBe(7);
+    const movements = await agent.get("/api/v1/products/" + product.body.id + "/movements?page=1&pageSize=10").expect(200);
+    expect(movements.body.pagination.total).toBe(3); expect(movements.body.data.map((item: { quantity: number }) => item.quantity).sort()).toEqual([-2,4,5]);
+    expect(movements.body.data.every((item: { balanceAfter: number; performedBy: { name: string } }) => typeof item.balanceAfter === "number" && item.performedBy.name.length > 0)).toBe(true);
+    const lowStock = await agent.get("/api/v1/products?lowStock=true").expect(200); expect(lowStock.body.data.some((item: { id: string }) => item.id === product.body.id)).toBe(false);
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf).send({ active: false, unitPrice: 12000, unitCost: 6000 }).expect(200);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).active).toBe(false);
+  });
+});
+
+
+describe("Sprint 04 Store financial transaction integrity", () => {
+  it("prevents overselling, preserves financial snapshots, scopes idempotency, and reverses a sale exactly once", async () => {
+    const account = await createAccount("store-transaction"); const agent = request.agent(app);
+    const signedIn = await login(agent, account); const csrf = signedIn.body.csrfToken as string;
+    const category = await agent.post("/api/v1/product-categories").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ name: "Transactions" }).expect(201);
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "TX-001", name: "Transaction Product", categoryId: category.body.id, unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(201);
+    const item = [{ productId: product.body.id, quantity: 2 }];
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-cash-invalid").send({ paymentMethod: "CASH", cashReceived: 1, items: item, unitPrice: 1, total: 1, tenantId: "forged" }).expect(400);
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-transfer-invalid").send({ paymentMethod: "TRANSFER", items: item }).expect(400);
+    const first = agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-concurrent-a").send({ paymentMethod: "CASH", cashReceived: 20000, items: item });
+    const second = agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "transaction-concurrent-b").send({ paymentMethod: "CASH", cashReceived: 20000, items: item });
+    const attempts = await Promise.all([first, second]);
+    expect(attempts.map((result) => result.status).sort()).toEqual([201, 409]);
+    const accepted = attempts.find((result) => result.status === 201); const acceptedKey = attempts[0]?.status === 201 ? "transaction-concurrent-a" : "transaction-concurrent-b"; if (!accepted) throw new Error("Expected one checkout to succeed.");
+    const sale = await prisma.sale.findUniqueOrThrow({ where: { id: accepted.body.id }, include: { items: true, payment: true } });
+    expect(sale.total.toString()).toBe("20000"); expect(sale.totalCost?.toString()).toBe("8000"); expect(sale.grossMargin?.toString()).toBe("12000");
+    expect(sale.items[0]?.productSku).toBe("TX-001"); expect(sale.items[0]?.unitCost?.toString()).toBe("4000"); expect(sale.payment?.cashReceived?.toString()).toBe("20000"); expect(sale.payment?.changeGiven?.toString()).toBe("0");
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(0);
+    expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(1);
+    const replay = await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", acceptedKey).send({ paymentMethod: "CASH", cashReceived: 20000, items: item }).expect(200);
+    expect(replay.body.idempotentReplay).toBe(true);
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", acceptedKey).send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(409);
+    await prisma.product.update({ where: { id: product.body.id }, data: { unitPrice: 99000, unitCost: 9900 } });
+    const snapshot = await prisma.saleItem.findFirstOrThrow({ where: { saleId: sale.id } }); expect(snapshot.unitPrice.toString()).toBe("10000"); expect(snapshot.unitCost?.toString()).toBe("4000");
+    const voidOne = agent.post("/api/v1/sales/" + sale.id + "/void").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ reason: "Synthetic reversal" });
+    const voidTwo = agent.post("/api/v1/sales/" + sale.id + "/void").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ reason: "Synthetic reversal" });
+    const voids = await Promise.all([voidOne, voidTwo]); expect(voids.map((result) => result.status).sort()).toEqual([200, 409]);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(2);
+    expect(await prisma.stockMovement.count({ where: { saleId: sale.id, reason: "POS_VOID" } })).toBe(1);
+    expect((await prisma.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe("VOIDED");
+  });
+});
+
+
+async function withStoreAuditFailure(action: string, callback: () => Promise<void>): Promise<void> {
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_store_audit_trigger ON "AuditLog";');
+  await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS novo_fail_store_audit();');
+  try {
+    await prisma.$executeRawUnsafe("CREATE FUNCTION novo_fail_store_audit() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"entityType\" = ''Sale'' AND NEW.action = ''" + action + "'' THEN RAISE EXCEPTION ''forced store audit failure''; END IF; RETURN NEW; END;'");
+    await prisma.$executeRawUnsafe('CREATE TRIGGER novo_fail_store_audit_trigger BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION novo_fail_store_audit();');
+    await callback();
+  } finally {
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS novo_fail_store_audit_trigger ON "AuditLog";');
+    await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS novo_fail_store_audit();');
+  }
+}
+
+describe("Sprint 04 Store atomic audit rollback", () => {
+  it("rolls back checkout and void when their Sale audit write fails", async () => {
+    const account = await createAccount("store-rollback"); const agent = request.agent(app); const loginResult = await login(agent, account); const csrf = loginResult.body.csrfToken as string;
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "ROLLBACK-01", name: "Rollback Product", unitPrice: 10000, initialStock: 2 }).expect(201);
+    const checkoutBody = { paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] };
+    await withStoreAuditFailure("checkout", async () => { await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "rollback-checkout-01").send(checkoutBody).expect(500); });
+    expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(0); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(0); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(0); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(2);
+    const sale = await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "rollback-checkout-02").send(checkoutBody).expect(201);
+    await withStoreAuditFailure("void", async () => { await agent.post("/api/v1/sales/" + sale.body.id + "/void").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ reason: "Rollback void" }).expect(500); });
+    const persisted = await prisma.sale.findUniqueOrThrow({ where: { id: sale.body.id } }); expect(persisted.status).toBe("COMPLETED"); expect(persisted.voidReason).toBeNull(); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(1); expect(await prisma.stockMovement.count({ where: { saleId: sale.body.id, reason: "POS_VOID" } })).toBe(0);
+  });
+});
+
+
+describe("Sprint 04 StorePayment rollback isolation", () => {
+  it("rolls back checkout when StorePayment insertion fails", async () => {
+    const account = await createAccount("store-payment-failure"); const agent = request.agent(app); const signedIn = await login(agent, account); const csrf = signedIn.body.csrfToken as string;
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "PAYFAIL-01", name: "Payment Failure Product", unitPrice: 10000, initialStock: 1 }).expect(201);
+    const before = { sales: await prisma.sale.count({ where: { tenantId: account.tenantId } }), items: await prisma.saleItem.count(), payments: await prisma.storePayment.count({ where: { tenantId: account.tenantId } }), movements: await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } }), audits: await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "checkout" } }), stock: (await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand };
+    const functionName = "novo_fail_store_payment_fixture"; const triggerName = "novo_fail_store_payment_fixture_trigger";
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "StorePayment";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + functionName + '();');
+    try {
+      await prisma.$executeRawUnsafe("CREATE FUNCTION " + functionName + "() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''" + account.tenantId.replace(/'/g, "''") + "'' THEN RAISE EXCEPTION ''forced fixture StorePayment failure''; END IF; RETURN NEW; END;'");
+      await prisma.$executeRawUnsafe('CREATE TRIGGER ' + triggerName + ' BEFORE INSERT ON "StorePayment" FOR EACH ROW EXECUTE FUNCTION ' + functionName + '();');
+      await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "store-payment-failure-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(500);
+      expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(before.sales); expect(await prisma.saleItem.count()).toBe(before.items); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(before.payments); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(before.movements); expect(await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "checkout" } })).toBe(before.audits); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(before.stock);
+    } finally { await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "StorePayment";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + functionName + '();'); }
+    await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf).set("Idempotency-Key", "store-payment-success-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+    expect(await prisma.sale.count({ where: { tenantId: account.tenantId } })).toBe(1); expect(await prisma.storePayment.count({ where: { tenantId: account.tenantId } })).toBe(1); expect(await prisma.stockMovement.count({ where: { tenantId: account.tenantId, reason: "POS_SALE" } })).toBe(1); expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(0);
+  });
+});
+
+
+async function withFixtureMovementFailure(tenantId: string, reason: string, suffix: string, callback: () => Promise<void>): Promise<void> {
+  const fn = "novo_fail_movement_" + suffix; const trigger = fn + "_trigger"; const escaped = tenantId.replace(/'/g, "''");
+  await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + trigger + ' ON "StockMovement";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + fn + '();');
+  try { await prisma.$executeRawUnsafe("CREATE FUNCTION " + fn + "() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''" + escaped + "'' AND NEW.reason = ''" + reason + "'' THEN RAISE EXCEPTION ''forced movement failure''; END IF; RETURN NEW; END;'"); await prisma.$executeRawUnsafe('CREATE TRIGGER ' + trigger + ' BEFORE INSERT ON "StockMovement" FOR EACH ROW EXECUTE FUNCTION ' + fn + '();'); await callback(); }
+  finally { await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + trigger + ' ON "StockMovement";'); await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + fn + '();'); }
+}
+
+describe("Sprint 04 POS movement rollback", () => {
+  it("rolls back checkout when POS_SALE movement insertion fails", async () => {
+    const account=await createAccount("pos-sale-failure"); const agent=request.agent(app); const signed=await login(agent,account); const csrf=signed.body.csrfToken as string;
+    const product=await agent.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",csrf).send({sku:"SALEFAIL-01",name:"Sale Failure",unitPrice:10000,initialStock:1}).expect(201);
+    await withFixtureMovementFailure(account.tenantId,"POS_SALE","sale",async()=>{await agent.post("/api/v1/sales").set("Origin",origin).set("X-Novo-Csrf",csrf).set("Idempotency-Key","pos-sale-fail-01").send({paymentMethod:"CASH",cashReceived:10000,items:[{productId:product.body.id,quantity:1}]}).expect(500);});
+    expect(await prisma.sale.count({where:{tenantId:account.tenantId}})).toBe(0);expect(await prisma.storePayment.count({where:{tenantId:account.tenantId}})).toBe(0);expect(await prisma.stockMovement.count({where:{tenantId:account.tenantId,reason:"POS_SALE"}})).toBe(0);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(1);
+    await agent.post("/api/v1/sales").set("Origin",origin).set("X-Novo-Csrf",csrf).set("Idempotency-Key","pos-sale-success-01").send({paymentMethod:"CASH",cashReceived:10000,items:[{productId:product.body.id,quantity:1}]}).expect(201);expect(await prisma.sale.count({where:{tenantId:account.tenantId}})).toBe(1);
+  });
+  it("rolls back void when POS_VOID movement insertion fails", async () => {
+    const account=await createAccount("pos-void-failure"); const agent=request.agent(app); const signed=await login(agent,account); const csrf=signed.body.csrfToken as string;
+    const product=await agent.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",csrf).send({sku:"VOIDFAIL-01",name:"Void Failure",unitPrice:10000,initialStock:1}).expect(201);
+    const sale=await agent.post("/api/v1/sales").set("Origin",origin).set("X-Novo-Csrf",csrf).set("Idempotency-Key","pos-void-sale-01").send({paymentMethod:"CASH",cashReceived:10000,items:[{productId:product.body.id,quantity:1}]}).expect(201);
+    await withFixtureMovementFailure(account.tenantId,"POS_VOID","void",async()=>{await agent.post("/api/v1/sales/"+sale.body.id+"/void").set("Origin",origin).set("X-Novo-Csrf",csrf).send({reason:"Injected movement failure"}).expect(500);});
+    const unchanged=await prisma.sale.findUniqueOrThrow({where:{id:sale.body.id}});expect(unchanged.status).toBe("COMPLETED");expect(unchanged.voidReason).toBeNull();expect(unchanged.voidedAt).toBeNull();expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(0);expect(await prisma.stockMovement.count({where:{saleId:sale.body.id,reason:"POS_VOID"}})).toBe(0);expect(await prisma.auditLog.count({where:{entityId:sale.body.id,action:"void"}})).toBe(0);
+    await agent.post("/api/v1/sales/"+sale.body.id+"/void").set("Origin",origin).set("X-Novo-Csrf",csrf).send({reason:"Retry after cleanup"}).expect(200);expect((await prisma.sale.findUniqueOrThrow({where:{id:sale.body.id}})).status).toBe("VOIDED");expect(await prisma.stockMovement.count({where:{saleId:sale.body.id,reason:"POS_VOID"}})).toBe(1);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(1);
+  });
+});
+
+
+describe("Sprint 04 receipt movement rollback", () => {
+  it("rolls back stock receipt when STOCK_RECEIPT movement insertion fails", async () => {
+    const account=await createAccount("receipt-movement-failure");const agent=request.agent(app);const signed=await login(agent,account);const csrf=signed.body.csrfToken as string;
+    const product=await agent.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",csrf).send({sku:"RCVFAIL-01",name:"Receipt Failure",unitPrice:10000,initialStock:2}).expect(201);
+    const baseline={stock:(await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand,movements:await prisma.stockMovement.count({where:{productId:product.body.id}}),audits:await prisma.auditLog.count({where:{tenantId:account.tenantId,action:"receive_stock",entityId:product.body.id}})};
+    await withFixtureMovementFailure(account.tenantId,"STOCK_RECEIPT","receipt",async()=>{await agent.post("/api/v1/products/"+product.body.id+"/receipts").set("Idempotency-Key", "inventory-legacy-004").set("Origin",origin).set("X-Novo-Csrf",csrf).send({quantity:3,reference:"RCV-FAIL-01"}).expect(500);});
+    expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(baseline.stock);expect(await prisma.stockMovement.count({where:{productId:product.body.id}})).toBe(baseline.movements);expect(await prisma.auditLog.count({where:{tenantId:account.tenantId,action:"receive_stock",entityId:product.body.id}})).toBe(baseline.audits);
+    await agent.post("/api/v1/products/"+product.body.id+"/receipts").set("Idempotency-Key", "inventory-legacy-005").set("Origin",origin).set("X-Novo-Csrf",csrf).send({quantity:3,reference:"RCV-OK-01"}).expect(201);expect((await prisma.product.findUniqueOrThrow({where:{id:product.body.id}})).stockOnHand).toBe(5);expect(await prisma.stockMovement.count({where:{productId:product.body.id,reason:"STOCK_RECEIPT"}})).toBe(1);
+  });
+});
+
+
+describe("Sprint 04 receipt audit rollback",()=>{it("rolls back stock receipt when receive_stock audit insertion fails",async()=>{const a=await createAccount("receipt-audit-failure");const g=request.agent(app),l=await login(g,a),c=l.body.csrfToken as string;const p=await g.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",c).send({sku:"RCVAUD-01",name:"Receipt Audit",unitPrice:10000,initialStock:2}).expect(201);const base={stock:(await prisma.product.findUniqueOrThrow({where:{id:p.body.id}})).stockOnHand,m:await prisma.stockMovement.count({where:{productId:p.body.id}}),a:await prisma.auditLog.count({where:{tenantId:a.tenantId,action:"receive_stock"}})};const fn="novo_fail_receipt_audit",tr=fn+"_trigger";await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS '+tr+' ON "AuditLog";');try{await prisma.$executeRawUnsafe("CREATE FUNCTION "+fn+"() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''"+a.tenantId.replace(/'/g,"''")+"'' AND NEW.action = ''receive_stock'' THEN RAISE EXCEPTION ''receipt audit failure''; END IF; RETURN NEW; END;'");await prisma.$executeRawUnsafe('CREATE TRIGGER '+tr+' BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION '+fn+'();');await g.post("/api/v1/products/"+p.body.id+"/receipts").set("Idempotency-Key", "inventory-legacy-006").set("Origin",origin).set("X-Novo-Csrf",c).send({quantity:3,reference:"AUD-FAIL"}).expect(500);expect((await prisma.product.findUniqueOrThrow({where:{id:p.body.id}})).stockOnHand).toBe(base.stock);expect(await prisma.stockMovement.count({where:{productId:p.body.id}})).toBe(base.m);expect(await prisma.auditLog.count({where:{tenantId:a.tenantId,action:"receive_stock"}})).toBe(base.a);}finally{await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS '+tr+' ON "AuditLog";');await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS '+fn+'();');}await g.post("/api/v1/products/"+p.body.id+"/receipts").set("Idempotency-Key", "inventory-legacy-007").set("Origin",origin).set("X-Novo-Csrf",c).send({quantity:3,reference:"AUD-OK"}).expect(201);expect((await prisma.product.findUniqueOrThrow({where:{id:p.body.id}})).stockOnHand).toBe(5);});});
+
+
+describe("Sprint 04 adjustment movement rollback",()=>{it("rolls back stock adjustment when StockMovement insertion fails",async()=>{const a=await createAccount("adjustment-movement-failure"),g=request.agent(app),l=await login(g,a),c=l.body.csrfToken as string,pd=await g.post("/api/v1/products").set("Origin",origin).set("X-Novo-Csrf",c).send({sku:"ADJFAIL-01",name:"Adjustment Failure",unitPrice:10000,initialStock:5}).expect(201),reason="CP4 adjustment fixture",full="STOCK_ADJUSTMENT: "+reason,b={s:(await prisma.product.findUniqueOrThrow({where:{id:pd.body.id}})).stockOnHand,m:await prisma.stockMovement.count({where:{productId:pd.body.id}}),a:await prisma.auditLog.count({where:{tenantId:a.tenantId,action:"adjust_stock"}})},fn="novo_fail_adjustment_movement",tr=fn+"_trigger";await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS '+tr+' ON "StockMovement";');try{await prisma.$executeRawUnsafe("CREATE FUNCTION "+fn+"() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''"+a.tenantId.replace(/'/g,"''")+"'' AND NEW.reason = ''"+full+"'' THEN RAISE EXCEPTION ''adjustment failure''; END IF; RETURN NEW; END;'");await prisma.$executeRawUnsafe('CREATE TRIGGER '+tr+' BEFORE INSERT ON "StockMovement" FOR EACH ROW EXECUTE FUNCTION '+fn+'();');await g.post("/api/v1/products/"+pd.body.id+"/adjustments").set("Idempotency-Key", "inventory-legacy-008").set("Origin",origin).set("X-Novo-Csrf",c).send({quantity:-2,reason}).expect(500);expect((await prisma.product.findUniqueOrThrow({where:{id:pd.body.id}})).stockOnHand).toBe(b.s);expect(await prisma.stockMovement.count({where:{productId:pd.body.id}})).toBe(b.m);expect(await prisma.auditLog.count({where:{tenantId:a.tenantId,action:"adjust_stock"}})).toBe(b.a);}finally{await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS '+tr+' ON "StockMovement";');await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS '+fn+'();');}const ok=await g.post("/api/v1/products/"+pd.body.id+"/adjustments").set("Idempotency-Key", "inventory-legacy-009").set("Origin",origin).set("X-Novo-Csrf",c).send({quantity:-2,reason}).expect(201);expect(ok.body.quantity).toBe(-2);expect(ok.body.balanceAfter).toBe(3);expect((await prisma.product.findUniqueOrThrow({where:{id:pd.body.id}})).stockOnHand).toBe(3);});});
+
+
+describe("Sprint 04 adjustment audit rollback", () => {
+  it("rolls back stock adjustment when adjust_stock audit insertion fails", async () => {
+    const account = await createAccount("adjustment-audit-failure");
+    const agent = request.agent(app);
+    const loginResult = await login(agent, account);
+    const csrf = loginResult.body.csrfToken as string;
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ sku: "ADJAUD-01", name: "Adjustment Audit Failure", unitPrice: 10000, initialStock: 5 }).expect(201);
+    const reason = "CP4 adjustment fixture";
+    const movementReason = "STOCK_ADJUSTMENT: " + reason;
+    const baseline = {
+      stock: (await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand,
+      movements: await prisma.stockMovement.count({ where: { productId: product.body.id } }),
+      audits: await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "adjust_stock", entityId: product.body.id } })
+    };
+    const functionName = "novo_fail_adjustment_audit";
+    const triggerName = functionName + "_trigger";
+    const tenantId = account.tenantId.replace(/'/g, "''");
+
+    await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "AuditLog";');
+    try {
+      await prisma.$executeRawUnsafe("CREATE FUNCTION " + functionName + "() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW.\"tenantId\" = ''" + tenantId + "'' AND NEW.action = ''adjust_stock'' THEN RAISE EXCEPTION ''forced adjustment audit failure''; END IF; RETURN NEW; END;'");
+      await prisma.$executeRawUnsafe('CREATE TRIGGER ' + triggerName + ' BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION ' + functionName + '();');
+
+      await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Idempotency-Key", "inventory-legacy-010").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -2, reason }).expect(500);
+
+      expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).stockOnHand).toBe(baseline.stock);
+      expect(await prisma.stockMovement.count({ where: { productId: product.body.id, reason: movementReason } })).toBe(0);
+      expect(await prisma.stockMovement.count({ where: { productId: product.body.id } })).toBe(baseline.movements);
+      expect(await prisma.auditLog.count({ where: { tenantId: account.tenantId, action: "adjust_stock", entityId: product.body.id } })).toBe(baseline.audits);
+    } finally {
+      await prisma.$executeRawUnsafe('DROP TRIGGER IF EXISTS ' + triggerName + ' ON "AuditLog";');
+      await prisma.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + functionName + '();');
+    }
+
+    const retry = await agent.post("/api/v1/products/" + product.body.id + "/adjustments").set("Idempotency-Key", "inventory-legacy-011").set("Origin", origin).set("X-Novo-Csrf", csrf).send({ quantity: -2, reason }).expect(201);
+    expect(retry.body.quantity).toBe(-2);
+    expect(retry.body.balanceAfter).toBe(3);
+    const persistedProduct = await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } });
+    const movements = await prisma.stockMovement.findMany({ where: { productId: product.body.id, reason: movementReason } });
+    const audits = await prisma.auditLog.findMany({ where: { tenantId: account.tenantId, action: "adjust_stock", entityId: product.body.id } });
+    expect(persistedProduct.stockOnHand).toBe(3);
+    expect(movements).toHaveLength(1);
+    expect(movements[0]).toMatchObject({ tenantId: account.tenantId, productId: product.body.id, quantity: -2, balanceAfter: 3, performedById: account.userId });
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ tenantId: account.tenantId, actorId: account.userId, action: "adjust_stock", entityType: "Product", entityId: product.body.id });
+  });
+});
+
+
+describe("Sprint 04 product HPP authorization", () => {
+  it("redacts catalog HPP for non-HPP roles while allowing permitted financial readers", async () => {
+    const owner = await createAccount("product-hpp-owner");
+    const other = await createAccount("product-hpp-other");
+    const cashier = await createTenantUser(owner, "product-hpp-cashier");
+    const analyst = await createTenantUser(owner, "product-hpp-analyst");
+    const finance = await createTenantUser(owner, "product-hpp-finance");
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "CASHIER" } });
+    await prisma.user.update({ where: { id: analyst.userId }, data: { role: "ANALYST" } });
+    await prisma.user.update({ where: { id: finance.userId }, data: { role: "FINANCE_OFFICER" } });
+
+    const ownerAgent = request.agent(app);
+    const cashierAgent = request.agent(app);
+    const analystAgent = request.agent(app);
+    const financeAgent = request.agent(app);
+    const otherAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    await login(cashierAgent, cashier);
+    await login(analystAgent, analyst);
+    await login(financeAgent, finance);
+    await login(otherAgent, other);
+    const product = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerLogin.body.csrfToken as string).send({ sku: "HPPREAD-01", name: "HPP Read Policy", unitPrice: 10000, unitCost: 4000, initialStock: 3 }).expect(201);
+    expect(product.body.unitCost).toBe(4000);
+
+    const cashierCatalog = await cashierAgent.get("/api/v1/products").expect(200);
+    const cashierProduct = cashierCatalog.body.data.find((item: { id: string }) => item.id === product.body.id);
+    expect(cashierProduct).toBeDefined();
+    expect(cashierProduct).not.toHaveProperty("unitCost");
+    expect(JSON.stringify(cashierProduct)).not.toContain("unitCost");
+
+    const analystCatalog = await analystAgent.get("/api/v1/products").expect(200);
+    const analystProduct = analystCatalog.body.data.find((item: { id: string }) => item.id === product.body.id);
+    expect(analystProduct).not.toHaveProperty("unitCost");
+
+    const financeCatalog = await financeAgent.get("/api/v1/products").expect(200);
+    const financeProduct = financeCatalog.body.data.find((item: { id: string }) => item.id === product.body.id);
+    expect(financeProduct.unitCost).toBe(4000);
+
+    const otherCatalog = await otherAgent.get("/api/v1/products").expect(200);
+    expect(otherCatalog.body.data.some((item: { id: string }) => item.id === product.body.id)).toBe(false);
+  });
+
+  it("rejects non-HPP manager cost writes without changing persisted HPP", async () => {
+    const owner = await createAccount("product-hpp-manager-owner");
+    const manager = await createTenantUser(owner, "product-hpp-manager");
+    await prisma.user.update({ where: { id: manager.userId }, data: { role: "BUSINESS_DEVELOPMENT" } });
+    const ownerAgent = request.agent(app);
+    const managerAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    const managerLogin = await login(managerAgent, manager);
+    const ownerCsrf = ownerLogin.body.csrfToken as string;
+    const managerCsrf = managerLogin.body.csrfToken as string;
+    const protectedProduct = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPPMGR-01", name: "Protected HPP", unitPrice: 10000, unitCost: 4000 }).expect(201);
+
+    await managerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ sku: "HPPMGR-02", name: "Rejected HPP", unitPrice: 10000, unitCost: 2500 }).expect(403);
+    expect(await prisma.product.count({ where: { tenantId: owner.tenantId } })).toBe(1);
+
+    const managed = await managerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ sku: "HPPMGR-03", name: "Managed Without HPP", unitPrice: 10000, initialStock: 1 }).expect(201);
+    expect(managed.body).not.toHaveProperty("unitCost");
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: managed.body.id } })).unitCost).toBeNull();
+
+    await managerAgent.post("/api/v1/products/" + protectedProduct.body.id + "/receipts").set("Idempotency-Key", "inventory-legacy-012").set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ quantity: 1, reference: "HPP-MGR", unitCost: 2500 }).expect(403);
+    const afterRejectedReceipt = await prisma.product.findUniqueOrThrow({ where: { id: protectedProduct.body.id } });
+    expect(afterRejectedReceipt.unitCost?.toString()).toBe("4000");
+    expect(afterRejectedReceipt.stockOnHand).toBe(0);
+
+    await managerAgent.patch("/api/v1/products/" + protectedProduct.body.id).set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ unitCost: 2500 }).expect(403);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: protectedProduct.body.id } })).unitCost?.toString()).toBe("4000");
+
+    const safePatch = await managerAgent.patch("/api/v1/products/" + protectedProduct.body.id).set("Origin", origin).set("X-Novo-Csrf", managerCsrf).send({ name: "Managed Metadata Change" }).expect(200);
+    expect(safePatch.body).not.toHaveProperty("unitCost");
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: protectedProduct.body.id } })).unitCost?.toString()).toBe("4000");
+  });
+
+  it("allows a product-managing HPP role to update HPP while cashier sales and receipts stay redacted", async () => {
+    const owner = await createAccount("product-hpp-authorized");
+    const cashier = await createTenantUser(owner, "product-hpp-authorized-cashier");
+    await prisma.user.update({ where: { id: cashier.userId }, data: { role: "CASHIER" } });
+    const ownerAgent = request.agent(app);
+    const cashierAgent = request.agent(app);
+    const ownerLogin = await login(ownerAgent, owner);
+    const cashierLogin = await login(cashierAgent, cashier);
+    const ownerCsrf = ownerLogin.body.csrfToken as string;
+    const cashierCsrf = cashierLogin.body.csrfToken as string;
+    const product = await ownerAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ sku: "HPPAUTH-01", name: "Authorized HPP", unitPrice: 10000, unitCost: 4000, initialStock: 2 }).expect(201);
+    const updated = await ownerAgent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ unitCost: 4500 }).expect(200);
+    expect(updated.body.unitCost).toBe(4500);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).unitCost?.toString()).toBe("4500");
+    await ownerAgent.post("/api/v1/products/" + product.body.id + "/receipts").set("Idempotency-Key", "inventory-legacy-013").set("Origin", origin).set("X-Novo-Csrf", ownerCsrf).send({ quantity: 1, reference: "HPP-AUTH", unitCost: 5000 }).expect(201);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).unitCost?.toString()).toBe("5000");
+
+    const sale = await cashierAgent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", cashierCsrf).set("Idempotency-Key", "hpp-authorized-sale-01").send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+    expect(JSON.stringify(sale.body)).not.toContain("unitCost");
+    expect(JSON.stringify(sale.body)).not.toContain("grossMargin");
+    const receipt = await cashierAgent.get("/api/v1/sales/" + sale.body.id + "/receipt").expect(200);
+    expect(JSON.stringify(receipt.body)).not.toContain("unitCost");
+    expect(JSON.stringify(receipt.body)).not.toContain("grossMargin");
+  });
+});
+
+describe("Sprint 04 SKU database integrity", () => {
+  it("canonicalizes API SKU creates and updates, rejects conflicts without partial writes, and preserves sale snapshots", async () => {
+    const account = await createAccount("sku-api-integrity");
+    const agent = request.agent(app);
+    const loginResult = await login(agent, account);
+    const csrf = loginResult.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "abc-001", name: "Canonical API SKU", unitPrice: 10000, initialStock: 1 }).expect(201);
+    expect(product.body.sku).toBe("ABC-001");
+
+    await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "ABC-001", name: "Conflicting API SKU", unitPrice: 10000 }).expect(409);
+    expect(await prisma.product.count({ where: { tenantId: account.tenantId } })).toBe(1);
+
+    const second = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "second-003", name: "Second Canonical SKU", unitPrice: 10000 }).expect(201);
+    expect(second.body.sku).toBe("SECOND-003");
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "second-003" }).expect(409);
+    expect((await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } })).sku).toBe("ABC-001");
+
+    const sale = await agent.post("/api/v1/sales").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", "sku-integrity-sale-01")
+      .send({ paymentMethod: "CASH", cashReceived: 10000, items: [{ productId: product.body.id, quantity: 1 }] }).expect(201);
+
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "next-002" }).expect(200).then((response) => expect(response.body.sku).toBe("NEXT-002"));
+    await agent.patch("/api/v1/products/" + product.body.id).set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "not a valid sku" }).expect(400);
+
+    const persisted = await prisma.product.findUniqueOrThrow({ where: { id: product.body.id } });
+    const snapshot = await prisma.saleItem.findFirstOrThrow({ where: { saleId: sale.body.id } });
+    expect(persisted.sku).toBe("NEXT-002");
+    expect(snapshot.productSku).toBe("ABC-001");
+  });
+
+  it("enforces canonical SKU integrity on direct PostgreSQL writes while permitting the same SKU in another tenant", async () => {
+    const account = await createAccount("sku-direct-integrity");
+    const other = await createAccount("sku-direct-integrity-other");
+    const agent = request.agent(app);
+    const otherAgent = request.agent(app);
+    const loginResult = await login(agent, account);
+    const otherLogin = await login(otherAgent, other);
+    const csrf = loginResult.body.csrfToken as string;
+    const otherCsrf = otherLogin.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ sku: "db-case-001", name: "Database Canonical SKU", unitPrice: 10000 }).expect(201);
+    expect(product.body.sku).toBe("DB-CASE-001");
+
+    const now = new Date();
+    await expect(prisma.$executeRaw`
+      INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
+      VALUES (${"sku-direct-lowercase"}, ${account.tenantId}, ${"db-case-001"}, ${"Direct lowercase bypass"}, ${new Prisma.Decimal(10000)}, ${0}, ${0}, ${true}, ${now}, ${now})
+    `).rejects.toThrow();
+    await expect(prisma.$executeRaw`
+      INSERT INTO "Product" ("id", "tenantId", "sku", "name", "unitPrice", "stockOnHand", "reorderLevel", "active", "createdAt", "updatedAt")
+      VALUES (${"sku-direct-duplicate"}, ${account.tenantId}, ${"DB-CASE-001"}, ${"Direct duplicate bypass"}, ${new Prisma.Decimal(10000)}, ${0}, ${0}, ${true}, ${now}, ${now})
+    `).rejects.toThrow();
+    expect(await prisma.product.count({ where: { tenantId: account.tenantId, sku: "DB-CASE-001" } })).toBe(1);
+
+    const otherProduct = await otherAgent.post("/api/v1/products").set("Origin", origin).set("X-Novo-Csrf", otherCsrf)
+      .send({ sku: "db-case-001", name: "Other Tenant SKU", unitPrice: 15000 }).expect(201);
+    expect(otherProduct.body.sku).toBe("DB-CASE-001");
+    expect(await prisma.product.count({ where: { sku: "DB-CASE-001" } })).toBe(2);
+  });
+});
+
+describe("Sprint 04 Inventory idempotency regression", () => {
+  it("replays identical receipts once and redacts internal fields", async () => {
+    const account = await createAccount("inventory-idem-receipt");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "IDEM-RC-001",
+        name: "Idempotent Receipt Product",
+        unitPrice: 10000,
+        initialStock: 5,
+      }).expect(201);
+
+    const path = "/api/v1/products/" + product.body.id + "/receipts";
+    const key = "inventory-idem-receipt-001";
+    const payload = { quantity: 3, reference: "IDEM-DOC-001" };
+
+    const first = await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(201);
+
+    const replay = await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(200);
+
+    expect(replay.body).toEqual(first.body);
+    expect(first.body).not.toHaveProperty("idempotencyKey");
+    expect(first.body).not.toHaveProperty("inputFingerprint");
+
+    await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send({ ...payload, quantity: 4 }).expect(409);
+
+    await agent.post(
+      "/api/v1/products/" + product.body.id + "/adjustments",
+    )
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send({ quantity: -1, reason: "Cross-operation key" })
+      .expect(409);
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(8);
+
+    expect(await prisma.stockMovement.count({
+      where: {
+        tenantId: account.tenantId,
+        productId: product.body.id,
+        reason: "STOCK_RECEIPT",
+      },
+    })).toBe(1);
+
+    expect(await prisma.auditLog.count({
+      where: {
+        tenantId: account.tenantId,
+        entityId: product.body.id,
+        action: "receive_stock",
+      },
+    })).toBe(1);
+
+    const history = await agent.get(
+      "/api/v1/products/" + product.body.id + "/movements",
+    ).expect(200);
+
+    expect(history.body.data.length).toBeGreaterThan(0);
+
+    for (const movement of history.body.data) {
+      expect(movement).not.toHaveProperty("idempotencyKey");
+      expect(movement).not.toHaveProperty("inputFingerprint");
+    }
+  }, 30_000);
+
+  it("replays adjustments without reducing stock twice", async () => {
+    const account = await createAccount("inventory-idem-adjustment");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "IDEM-AD-001",
+        name: "Idempotent Adjustment Product",
+        unitPrice: 10000,
+        initialStock: 8,
+      }).expect(201);
+
+    const path = "/api/v1/products/" + product.body.id + "/adjustments";
+    const key = "inventory-idem-adjustment-001";
+    const payload = {
+      quantity: -3,
+      reason: "Physical inventory recount",
+      reference: "IDEM-COUNT-001",
+    };
+
+    const first = await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(201);
+
+    const replay = await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(200);
+
+    expect(replay.body.id).toBe(first.body.id);
+    expect(replay.body).not.toHaveProperty("idempotencyKey");
+    expect(replay.body).not.toHaveProperty("inputFingerprint");
+
+    await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send({ ...payload, reason: "Damaged goods" }).expect(409);
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(5);
+
+    expect(await prisma.stockMovement.count({
+      where: {
+        tenantId: account.tenantId,
+        productId: product.body.id,
+        reason: "STOCK_ADJUSTMENT: " + payload.reason,
+      },
+    })).toBe(1);
+
+    expect(await prisma.auditLog.count({
+      where: {
+        tenantId: account.tenantId,
+        entityId: product.body.id,
+        action: "adjust_stock",
+      },
+    })).toBe(1);
+  }, 30_000);
+
+  it("isolates inventory idempotency keys between tenants", async () => {
+    const firstAccount = await createAccount("inventory-idem-tenant-one");
+    const secondAccount = await createAccount("inventory-idem-tenant-two");
+
+    const firstAgent = request.agent(app);
+    const secondAgent = request.agent(app);
+
+    const firstLogin = await login(firstAgent, firstAccount);
+    const secondLogin = await login(secondAgent, secondAccount);
+
+    const firstCsrf = firstLogin.body.csrfToken as string;
+    const secondCsrf = secondLogin.body.csrfToken as string;
+
+    const firstProduct = await firstAgent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", firstCsrf)
+      .send({
+        sku: "IDEM-TEN-001",
+        name: "First Tenant Product",
+        unitPrice: 10000,
+        initialStock: 1,
+      }).expect(201);
+
+    const secondProduct = await secondAgent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", secondCsrf)
+      .send({
+        sku: "IDEM-TEN-001",
+        name: "Second Tenant Product",
+        unitPrice: 10000,
+        initialStock: 1,
+      }).expect(201);
+
+    const key = "inventory-idem-shared-tenant-001";
+    const payload = { quantity: 2, reference: "SHARED-REF-001" };
+
+    const first = await firstAgent.post(
+      "/api/v1/products/" + firstProduct.body.id + "/receipts",
+    )
+      .set("Origin", origin).set("X-Novo-Csrf", firstCsrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(201);
+
+    const second = await secondAgent.post(
+      "/api/v1/products/" + secondProduct.body.id + "/receipts",
+    )
+      .set("Origin", origin).set("X-Novo-Csrf", secondCsrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(201);
+
+    expect(first.body.id).not.toBe(second.body.id);
+
+    for (const productId of [
+      firstProduct.body.id,
+      secondProduct.body.id,
+    ]) {
+      expect((await prisma.product.findUniqueOrThrow({
+        where: { id: productId },
+      })).stockOnHand).toBe(3);
+    }
+
+    expect(await prisma.stockMovement.count({
+      where: {
+        tenantId: firstAccount.tenantId,
+        idempotencyKey: key,
+      },
+    })).toBe(1);
+
+    expect(await prisma.stockMovement.count({
+      where: {
+        tenantId: secondAccount.tenantId,
+        idempotencyKey: key,
+      },
+    })).toBe(1);
+  }, 30_000);
+
+  it("does not duplicate stock under concurrent identical requests", async () => {
+    const account = await createAccount("inventory-idem-concurrent");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "IDEM-CON-001",
+        name: "Concurrent Receipt Product",
+        unitPrice: 10000,
+        initialStock: 4,
+      }).expect(201);
+
+    const path = "/api/v1/products/" + product.body.id + "/receipts";
+    const key = "inventory-idem-concurrent-001";
+    const payload = { quantity: 3, reference: "CONCURRENT-REF-001" };
+
+    const attempts = await Promise.all([
+      agent.post(path)
+        .set("Origin", origin).set("X-Novo-Csrf", csrf)
+        .set("Idempotency-Key", key).send(payload),
+      agent.post(path)
+        .set("Origin", origin).set("X-Novo-Csrf", csrf)
+        .set("Idempotency-Key", key).send(payload),
+    ]);
+
+    expect(attempts.some((result) => result.status === 201)).toBe(true);
+    expect(attempts.every((result) =>
+      [200, 201, 409].includes(result.status),
+    )).toBe(true);
+
+    const replay = await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(200);
+
+    expect(replay.body).not.toHaveProperty("idempotencyKey");
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(7);
+
+    expect(await prisma.stockMovement.count({
+      where: { tenantId: account.tenantId, idempotencyKey: key },
+    })).toBe(1);
+
+    expect(await prisma.auditLog.count({
+      where: {
+        tenantId: account.tenantId,
+        entityId: product.body.id,
+        action: "receive_stock",
+      },
+    })).toBe(1);
+  }, 30_000);
+
+  it("allows retrying the same key after receipt rollback", async () => {
+    const account = await createAccount("inventory-idem-receipt-rollback");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "IDEM-RBK-001",
+        name: "Receipt Rollback Product",
+        unitPrice: 10000,
+        initialStock: 2,
+      }).expect(201);
+
+    const path = "/api/v1/products/" + product.body.id + "/receipts";
+    const key = "inventory-idem-receipt-rollback-001";
+    const payload = { quantity: 2, reference: "RBK-RECEIPT-001" };
+
+    await withFixtureMovementFailure(
+      account.tenantId,
+      "STOCK_RECEIPT",
+      "idemreceipt",
+      async () => {
+        await agent.post(path)
+          .set("Origin", origin).set("X-Novo-Csrf", csrf)
+          .set("Idempotency-Key", key)
+          .send(payload).expect(500);
+      },
+    );
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(2);
+
+    expect(await prisma.stockMovement.count({
+      where: { tenantId: account.tenantId, idempotencyKey: key },
+    })).toBe(0);
+
+    await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(201);
+
+    await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(200);
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(4);
+
+    expect(await prisma.stockMovement.count({
+      where: { tenantId: account.tenantId, idempotencyKey: key },
+    })).toBe(1);
+  }, 30_000);
+
+  it("allows retrying the same key after adjustment rollback", async () => {
+    const account = await createAccount("inventory-idem-adjustment-rollback");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "IDEM-ARB-001",
+        name: "Adjustment Rollback Product",
+        unitPrice: 10000,
+        initialStock: 5,
+      }).expect(201);
+
+    const path = "/api/v1/products/" + product.body.id + "/adjustments";
+    const key = "inventory-idem-adjustment-rollback-001";
+    const payload = {
+      quantity: -2,
+      reason: "Physical inventory correction",
+      reference: "RBK-ADJUSTMENT-001",
+    };
+
+    await withFixtureMovementFailure(
+      account.tenantId,
+      "STOCK_ADJUSTMENT: " + payload.reason,
+      "idemadjustment",
+      async () => {
+        await agent.post(path)
+          .set("Origin", origin).set("X-Novo-Csrf", csrf)
+          .set("Idempotency-Key", key)
+          .send(payload).expect(500);
+      },
+    );
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(5);
+
+    expect(await prisma.stockMovement.count({
+      where: { tenantId: account.tenantId, idempotencyKey: key },
+    })).toBe(0);
+
+    await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(201);
+
+    await agent.post(path)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", key)
+      .send(payload).expect(200);
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(3);
+
+    expect(await prisma.stockMovement.count({
+      where: { tenantId: account.tenantId, idempotencyKey: key },
+    })).toBe(1);
+  }, 30_000);
+
+  it("rejects missing and malformed inventory idempotency keys", async () => {
+    const account = await createAccount("inventory-idem-validation");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+
+    const product = await agent.post("/api/v1/products")
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        sku: "IDEM-VAL-001",
+        name: "Inventory Key Validation Product",
+        unitPrice: 10000,
+        initialStock: 3,
+      }).expect(201);
+
+    const receiptPath =
+      "/api/v1/products/" + product.body.id + "/receipts";
+    const adjustmentPath =
+      "/api/v1/products/" + product.body.id + "/adjustments";
+
+    await agent.post(receiptPath)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({ quantity: 2 }).expect(400);
+
+    await agent.post(receiptPath)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .set("Idempotency-Key", "short")
+      .send({ quantity: 2 }).expect(400);
+
+    await agent.post(adjustmentPath)
+      .set("Origin", origin).set("X-Novo-Csrf", csrf)
+      .send({
+        quantity: -1,
+        reason: "Validation test",
+      }).expect(400);
+
+    expect((await prisma.product.findUniqueOrThrow({
+      where: { id: product.body.id },
+    })).stockOnHand).toBe(3);
+
+    expect(await prisma.stockMovement.count({
+      where: {
+        tenantId: account.tenantId,
+        reason: "STOCK_RECEIPT",
+      },
+    })).toBe(0);
+  }, 30_000);
 });
