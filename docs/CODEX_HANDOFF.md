@@ -1,10 +1,11 @@
-# Sprint 04 — CP4-D2-R1 SKU migration atomicity checkpoint
+# Sprint 04 — final acceptance handoff
 
-- Branch: `codex/sprint-04-store-pos-inventory`; baseline independently reported by owner: `eb169c7` (CI 40491042299 success).
-- HIGH-01 remains CLOSED by the owner-reported re-audit. HIGH-02A is **code/test pending CI**: the unmerged forward migration preflights invalid/colliding Product SKU records, takes `SHARE ROW EXCLUSIVE` on Product in one explicit transaction, canonicalizes only clean valid legacy ASCII values, and adds a database CHECK boundary. No legacy product is deleted, merged, suffixed, or silently selected as a winner.
-- `pnpm --filter @novo/api preflight:store-sku` is read-only and reports tenant ID, product ID and original SKU for invalid values/collisions. Production deployment must run it and manually resolve every finding before `prisma migrate deploy`; record backup, maintenance window, migration status, and logs. The release owner must first verify that no persistent environment has applied the earlier migration checksum. Never use `migrate reset` in production.
-- `pnpm --filter @novo/api test:legacy-sku-migration` is wired as an explicit GitHub Actions stage before ordinary migration deploy and uses isolated CI/test fixture databases. Local PostgreSQL integration remains BLOCKED until a disposable `novo_test` database is available. HIGH-02B (outer-whitespace policy mismatch) remains OPEN and is not changed in R1.
-- FR-006 remains **partial**. MED-01 structured-preview retention purge remains **OPEN** and mandatory before production personal-data processing. All 86 requirement IDs, including 42 Side Quests, remain tracked; none is promoted by this checkpoint.
+- Branch/source checkpoint: `codex/sprint-04-store-pos-inventory` at `41c509b39e9b32297b4314586d8e0023923864fe`.
+- HIGH-01 and HIGH-02A/B are CLOSED with recorded hosted CI evidence. Store inventory idempotency is implemented in migration `202610290007_store_inventory_idempotency`.
+- Final validation evidence on 2026-11-02: Prisma validate/generate, API/Web builds, API/Web/Contracts type checks, Store/API non-database tests (47/47), Contracts tests (3/3), Web tests (13/13), security integration (35/35), and the legacy SKU migration harness passed. PostgreSQL work ran only through isolated `novo_test`.
+- Owner-provided staging evidence records `41c509b` deployed, seven applied migrations, health 200, Prisma-backed invalid-session validation, backup/restore verification, and no residual synthetic tenant/movement data. This session did not alter staging.
+- PR #4 is OPEN, non-draft, MERGEABLE/CLEAN at `41c509b`, with five listed checks SUCCESS. `reviewDecision` is empty; see `SPRINT04_FINAL_ACCEPTANCE.md` for the review checklist. Do not merge automatically.
+- FR-006 remains **partial** across the 86-requirement roadmap; MED-01 is staging-verified but remains production-operations OPEN before real personal-data processing.
 # CODEX Handoff — Sprint 03 PR #3 final XLSX hardening
 
 ## Git state

@@ -1,5 +1,16 @@
 # Sprint 04 - Checkpoint 4 Staging Evidence
 
+## Final checkpoint update (owner-provided, 2026-11-02)
+
+- Verified deployed source checkpoint: `41c509b39e9b32297b4314586d8e0023923864fe`.
+- Render staging service remained LIVE and `/healthz` returned HTTP 200.
+- Seven Prisma migrations, including `202610290007_store_inventory_idempotency`, were applied.
+- The owner reports backup creation and isolated restore verification completed.
+- The staging database had zero Tenant and zero StockMovement records after synthetic-data cleanup.
+- Owner-provided local PowerShell evidence records isolated `novo_test`, seven migrations, security integration 35/35 PASS, and legacy SKU migration harness PASS.
+- PR #4 is OPEN, non-draft, MERGEABLE/CLEAN at `41c509b`; its five listed GitHub checks are SUCCESS. No review approval is claimed because `reviewDecision` is empty.
+- This update is recorded from owner-provided evidence; this Codex session did not re-run staging migration, backup/restore, or authenticated E2E tests.
+
 Date: 2026-10-29
 Project: NOVO Business Centre
 Environment: Staging

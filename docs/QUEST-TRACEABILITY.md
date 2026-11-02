@@ -101,4 +101,4 @@ HIGH-06 and HIGH-07 change only the FR-004 import-security boundary. The 20 Main
 
 ## Sprint 04 CP4-D2 traceability note
 
-The SKU-integrity change supports FR-006 and the existing full-stack persistence/security work. CP4-D2-R1 adds an atomic migration/locking harness with isolated legacy fixtures; it and the production preflight are pending PostgreSQL CI verification. HIGH-02B outer-whitespace policy remains OPEN. This does not promote any Main Quest or Side Quest to `verified`. All 20 Main Quest and 42 Side Quest rows remain tracked. MED-01 remains OPEN before production personal-data use.
+The SKU-integrity and inventory-idempotency changes support FR-006 and the existing full-stack persistence/security work. HIGH-02A/B have recorded PostgreSQL CI evidence; owner-provided isolated `novo_test` evidence records 35/35 security integration PASS and a passing SKU migration harness. Migration `202610290007_store_inventory_idempotency` extends the Store persistence boundary. This does not promote any Main Quest or Side Quest to `verified`. All 20 Main Quest and 42 Side Quest rows remain tracked. MED-01 remains OPEN before production personal-data use.
