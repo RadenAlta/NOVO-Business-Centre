@@ -12,6 +12,8 @@ import { prisma } from "./db.js";
 import { purgeExpiredImportPreviews } from "./import-preview-retention.js";
 import { env } from "./env.js";
 import { masterDataColumns, toExcelJsBuffer } from "./master-data-import.js";
+import { isActiveShuttleSubscriptionUniqueConflict } from "./shuttle-subscription-unique.js";
+import type { UserRole } from "./roles.js";
 
 const origin = "http://localhost:5173";
 const testDatabase = process.env.DATABASE_URL ?? "";
@@ -43,6 +45,8 @@ async function clearTestData(): Promise<void> {
   await prisma.sale.deleteMany();
   await prisma.product.deleteMany();
   await prisma.productCategory.deleteMany();
+  await prisma.shuttleSubscription.deleteMany();
+  await prisma.shuttleRoute.deleteMany();
   await prisma.savingsLedgerEntry.deleteMany();
   await prisma.savingsAccount.deleteMany();
   await prisma.cooperativeMember.deleteMany();
@@ -55,7 +59,7 @@ async function clearTestData(): Promise<void> {
   await prisma.tenant.deleteMany();
 }
 
-async function createAccount(slug: string, role: "ADMIN" | "VIEWER" = "ADMIN"): Promise<TestAccount> {
+async function createAccount(slug: string, role: UserRole = "ADMIN"): Promise<TestAccount> {
   const tenant = await prisma.tenant.create({ data: { name: `Tenant ${slug}`, slug } });
   const email = `${slug}@example.test`;
   const password = "SecurityPass123!";
@@ -69,13 +73,69 @@ async function login(agent: ReturnType<typeof request.agent>, account: TestAccou
   return agent.post("/api/v1/auth/login").set("Origin", origin).send({ tenantSlug: account.slug, email: account.email, password: account.password }).expect(200);
 }
 
-async function createTenantUser(account: TestAccount, emailPrefix: string, role: "ADMIN" | "VIEWER" = "ADMIN"): Promise<TestAccount> {
+async function createTenantUser(account: TestAccount, emailPrefix: string, role: UserRole = "ADMIN"): Promise<TestAccount> {
   const email = `${emailPrefix}@example.test`;
   const password = "SecurityPass123!";
   const user = await prisma.user.create({
     data: { tenantId: account.tenantId, email, name: `User ${emailPrefix}`, passwordHash: await bcrypt.hash(password, 4), role },
   });
   return { tenantId: account.tenantId, slug: account.slug, userId: user.id, email, password };
+}
+
+async function createEligibleShuttleMember(
+  account: TestAccount,
+  suffix: string,
+) {
+  const identity = await prisma.masterDataRecord.create({
+    data: {
+      tenantId: account.tenantId,
+      type: "TEACHER",
+      identifier: `TEACHER-${suffix}`,
+      fullName: `Eligible Teacher ${suffix}`,
+    },
+  });
+  return prisma.cooperativeMember.create({
+    data: {
+      tenantId: account.tenantId,
+      identityId: identity.id,
+      memberNo: `MEMBER-${suffix}`,
+      name: identity.fullName,
+    },
+  });
+}
+
+function sqlLiteral(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+async function withFailingShuttleAudit(
+  tenantId: string,
+  entityType: string,
+  action: string,
+  callback: () => Promise<void>,
+): Promise<void> {
+  const functionName = "novo_fail_shuttle_audit";
+  const triggerName = "novo_fail_shuttle_audit_trigger";
+  await prisma.$executeRawUnsafe(
+    `DROP TRIGGER IF EXISTS ${triggerName} ON "AuditLog";`,
+  );
+  await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${functionName}();`);
+  try {
+    await prisma.$executeRawUnsafe(
+      `CREATE FUNCTION ${functionName}() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN IF NEW."tenantId" = ''${sqlLiteral(tenantId)}'' AND NEW."entityType" = ''${sqlLiteral(entityType)}'' AND NEW."action" = ''${sqlLiteral(action)}'' THEN RAISE EXCEPTION ''forced Shuttle audit failure''; END IF; RETURN NEW; END;'`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE TRIGGER ${triggerName} BEFORE INSERT ON "AuditLog" FOR EACH ROW EXECUTE FUNCTION ${functionName}();`,
+    );
+    await callback();
+  } finally {
+    await prisma.$executeRawUnsafe(
+      `DROP TRIGGER IF EXISTS ${triggerName} ON "AuditLog";`,
+    );
+    await prisma.$executeRawUnsafe(
+      `DROP FUNCTION IF EXISTS ${functionName}();`,
+    );
+  }
 }
 
 const cooperativeMemberAuditFailureSql = {
@@ -1522,4 +1582,746 @@ describe("Sprint 04 Inventory idempotency regression", () => {
       },
     })).toBe(0);
   }, 30_000);
+});
+
+
+describe("Sprint 05 Shuttle foundation — A1 staged subset", () => {
+  it("paginates tenant-scoped routes and enforces route-mutation CSRF and RBAC", async () => {
+    const account = await createAccount("shuttle-route-owner");
+    const foreign = await createAccount("shuttle-route-foreign");
+    const viewer = await createTenantUser(
+      account,
+      "shuttle-route-viewer",
+      "VIEWER",
+    );
+    const agent = request.agent(app);
+    const foreignAgent = request.agent(app);
+    const viewerAgent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const foreignSignedIn = await login(foreignAgent, foreign);
+    const viewerSignedIn = await login(viewerAgent, viewer);
+    const csrf = signedIn.body.csrfToken as string;
+    const foreignCsrf = foreignSignedIn.body.csrfToken as string;
+    const viewerCsrf = viewerSignedIn.body.csrfToken as string;
+    const routeInput = {
+      code: "SH-ALPHA",
+      name: "Alpha Shuttle",
+      stops: ["Terminal A", "School"],
+      monthlyRate: 150000,
+    };
+
+    await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .send(routeInput)
+      .expect(403);
+    await viewerAgent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", viewerCsrf)
+      .send(routeInput)
+      .expect(403);
+    const alpha = await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send(routeInput)
+      .expect(201);
+    await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        code: "SH-BETA",
+        name: "Beta Shuttle",
+        stops: ["Terminal B", "School"],
+        monthlyRate: 175000,
+      })
+      .expect(201);
+    await foreignAgent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", foreignCsrf)
+      .send({
+        code: "SH-FOREIGN",
+        name: "Foreign Shuttle",
+        stops: ["Terminal F", "School"],
+        monthlyRate: 190000,
+      })
+      .expect(201);
+
+    const filtered = await agent
+      .get("/api/v1/shuttle/routes?q=alpha&page=1&pageSize=1")
+      .expect(200);
+    expect(filtered.body.data).toHaveLength(1);
+    expect(filtered.body.data[0]).toMatchObject({
+      id: alpha.body.id,
+      code: "SH-ALPHA",
+    });
+    expect(filtered.body.pagination).toMatchObject({
+      page: 1,
+      pageSize: 1,
+      total: 1,
+      pageCount: 1,
+    });
+
+    const ownRoutes = await agent
+      .get("/api/v1/shuttle/routes?page=1&pageSize=100")
+      .expect(200);
+    expect(ownRoutes.body.data).toHaveLength(2);
+    expect(
+      ownRoutes.body.data.some(
+        (route: { id: string }) => route.id === alpha.body.id,
+      ),
+    ).toBe(true);
+    expect(
+      ownRoutes.body.data.some(
+        (route: { code: string }) => route.code === "SH-FOREIGN",
+      ),
+    ).toBe(false);
+  });
+
+
+  it("validates subscription dates and prevents a foreign route from being assigned", async () => {
+    const account = await createAccount("shuttle-subscription-owner");
+    const foreign = await createAccount("shuttle-subscription-foreign");
+    const agent = request.agent(app);
+    const foreignAgent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const foreignSignedIn = await login(foreignAgent, foreign);
+    const csrf = signedIn.body.csrfToken as string;
+    const foreignCsrf = foreignSignedIn.body.csrfToken as string;
+    const member = await createEligibleShuttleMember(account, "SUB-OWNER");
+    const route = await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        code: "SH-SUB-OWNER",
+        name: "Subscription Owner",
+        stops: ["Stop One", "School"],
+        monthlyRate: 150000,
+      })
+      .expect(201);
+    const foreignRoute = await foreignAgent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", foreignCsrf)
+      .send({
+        code: "SH-SUB-FOREIGN",
+        name: "Subscription Foreign",
+        stops: ["Stop Two", "School"],
+        monthlyRate: 160000,
+      })
+      .expect(201);
+
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        memberId: member.id,
+        routeId: route.body.id,
+        startDate: "2026-11-02",
+        endDate: "2026-11-01",
+      })
+      .expect(400);
+    expect(
+      await prisma.shuttleSubscription.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        memberId: member.id,
+        routeId: foreignRoute.body.id,
+        startDate: "2026-11-02",
+      })
+      .expect(400);
+    expect(
+      await prisma.shuttleSubscription.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+
+    const created = await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        memberId: member.id,
+        routeId: route.body.id,
+        startDate: "2026-11-02",
+        endDate: "2026-12-31",
+      })
+      .expect(201);
+    const listed = await agent
+      .get(
+        "/api/v1/shuttle/subscriptions?q=MEMBER-SUB-OWNER&page=1&pageSize=10",
+      )
+      .expect(200);
+    expect(listed.body.data).toHaveLength(1);
+    expect(listed.body.data[0]).toMatchObject({
+      id: created.body.id,
+      memberId: member.id,
+      routeId: route.body.id,
+      status: "ACTIVE",
+    });
+    expect(listed.body.pagination).toMatchObject({
+      total: 1,
+      page: 1,
+      pageSize: 10,
+    });
+  });
+
+
+  it("rolls back route and subscription creation when their audit writes fail", async () => {
+    const account = await createAccount("shuttle-audit-rollback");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+    const routeBody = {
+      code: "SH-ROLLBACK",
+      name: "Rollback Shuttle",
+      stops: ["Start", "School"],
+      monthlyRate: 150000,
+    };
+
+    await withFailingShuttleAudit(
+      account.tenantId,
+      "ShuttleRoute",
+      "create",
+      async () => {
+        await agent
+          .post("/api/v1/shuttle/routes")
+          .set("Origin", origin)
+          .set("X-Novo-Csrf", csrf)
+          .send(routeBody)
+          .expect(500);
+      },
+    );
+    expect(
+      await prisma.shuttleRoute.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          tenantId: account.tenantId,
+          entityType: "ShuttleRoute",
+          action: "create",
+        },
+      }),
+    ).toBe(0);
+
+    const route = await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send(routeBody)
+      .expect(201);
+    const member = await createEligibleShuttleMember(account, "ROLLBACK");
+    const subscriptionBody = {
+      memberId: member.id,
+      routeId: route.body.id,
+      startDate: "2026-11-02",
+    };
+    await withFailingShuttleAudit(
+      account.tenantId,
+      "ShuttleSubscription",
+      "create",
+      async () => {
+        await agent
+          .post("/api/v1/shuttle/subscriptions")
+          .set("Origin", origin)
+          .set("X-Novo-Csrf", csrf)
+          .send(subscriptionBody)
+          .expect(500);
+      },
+    );
+    expect(
+      await prisma.shuttleSubscription.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          tenantId: account.tenantId,
+          entityType: "ShuttleSubscription",
+          action: "create",
+        },
+      }),
+    ).toBe(0);
+
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send(subscriptionBody)
+      .expect(201);
+    expect(
+      await prisma.shuttleSubscription.count({
+        where: { tenantId: account.tenantId },
+      }),
+    ).toBe(1);
+  });
+
+
+  it("rejects repeated and concurrent duplicate active subscription requests", async () => {
+    const account = await createAccount("shuttle-duplicate-active");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+    const member = await createEligibleShuttleMember(account, "DUPLICATE");
+    const route = await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        code: "SH-DUPLICATE",
+        name: "Duplicate Guard Route",
+        stops: ["Synthetic Stop", "School"],
+        monthlyRate: 100000,
+      })
+      .expect(201);
+    const body = {
+      memberId: member.id,
+      routeId: route.body.id,
+      startDate: "2026-11-01",
+    };
+
+    const concurrent = await Promise.all([
+      agent
+        .post("/api/v1/shuttle/subscriptions")
+        .set("Origin", origin)
+        .set("X-Novo-Csrf", csrf)
+        .send(body),
+      agent
+        .post("/api/v1/shuttle/subscriptions")
+        .set("Origin", origin)
+        .set("X-Novo-Csrf", csrf)
+        .send(body),
+    ]);
+    expect(concurrent.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(
+      concurrent.find((response) => response.status === 409)?.body.error.code,
+    ).toBe("DUPLICATE_ACTIVE_SUBSCRIPTION");
+    expect(
+      await prisma.shuttleSubscription.count({
+        where: {
+          tenantId: account.tenantId,
+          memberId: member.id,
+          routeId: route.body.id,
+          status: "ACTIVE",
+        },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          tenantId: account.tenantId,
+          entityType: "ShuttleSubscription",
+          action: "create",
+        },
+      }),
+    ).toBe(1);
+
+    const replay = await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send(body)
+      .expect(409);
+    expect(replay.body.error.code).toBe("DUPLICATE_ACTIVE_SUBSCRIPTION");
+  });
+
+
+  it("enforces active student uniqueness through both the API and PostgreSQL partial indexes", async () => {
+    const account = await createAccount("shuttle-student-unique");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+    const [route, student] = await Promise.all([
+      prisma.shuttleRoute.create({
+        data: {
+          tenantId: account.tenantId,
+          code: "SH-STUDENT-UNIQUE",
+          name: "Student Uniqueness Route",
+          stops: ["Synthetic Stop", "School"],
+          monthlyRate: 100000,
+        },
+      }),
+      prisma.masterDataRecord.create({
+        data: {
+          tenantId: account.tenantId,
+          type: "STUDENT",
+          identifier: "STUDENT-UNIQUE",
+          fullName: "Synthetic Unique Student",
+        },
+      }),
+    ]);
+    const body = {
+      studentIdentityId: student.id,
+      routeId: route.id,
+      startDate: "2026-11-01",
+    };
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send(body)
+      .expect(201);
+    const duplicate = await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send(body)
+      .expect(409);
+    expect(duplicate.body.error.code).toBe("DUPLICATE_ACTIVE_SUBSCRIPTION");
+
+    const otherRoute = await prisma.shuttleRoute.create({
+      data: {
+        tenantId: account.tenantId,
+        code: "SH-STUDENT-OTHER",
+        name: "Different Route",
+        stops: ["Synthetic Stop", "School"],
+        monthlyRate: 100000,
+      },
+    });
+    await prisma.shuttleSubscription.create({
+      data: {
+        tenantId: account.tenantId,
+        studentIdentityId: student.id,
+        routeId: otherRoute.id,
+        startDate: new Date("2026-11-01T00:00:00.000Z"),
+      },
+    });
+
+    const studentIndexConflict = await prisma.shuttleSubscription
+      .create({
+        data: {
+          tenantId: account.tenantId,
+          studentIdentityId: student.id,
+          routeId: route.id,
+          startDate: new Date("2026-11-02T00:00:00.000Z"),
+        },
+      })
+      .then(() => undefined, (error: unknown) => error);
+    expect(studentIndexConflict).toMatchObject({ code: "P2002" });
+    expect(isActiveShuttleSubscriptionUniqueConflict(studentIndexConflict)).toBe(true);
+
+    const member = await createEligibleShuttleMember(account, "DIRECT-UNIQUE");
+    const memberRoute = await prisma.shuttleRoute.create({
+      data: {
+        tenantId: account.tenantId,
+        code: "SH-MEMBER-UNIQUE",
+        name: "Member Uniqueness Route",
+        stops: ["Synthetic Stop", "School"],
+        monthlyRate: 100000,
+      },
+    });
+    await prisma.shuttleSubscription.create({
+      data: {
+        tenantId: account.tenantId,
+        memberId: member.id,
+        routeId: memberRoute.id,
+        startDate: new Date("2026-11-01T00:00:00.000Z"),
+      },
+    });
+    const memberIndexConflict = await prisma.shuttleSubscription
+      .create({
+        data: {
+          tenantId: account.tenantId,
+          memberId: member.id,
+          routeId: memberRoute.id,
+          startDate: new Date("2026-11-02T00:00:00.000Z"),
+        },
+      })
+      .then(() => undefined, (error: unknown) => error);
+    expect(memberIndexConflict).toMatchObject({ code: "P2002" });
+    expect(isActiveShuttleSubscriptionUniqueConflict(memberIndexConflict)).toBe(true);
+  });
+
+  it("uses one safe subscription response contract for POST and GET", async () => {
+    const account = await createAccount("shuttle-subscription-response");
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const csrf = signedIn.body.csrfToken as string;
+    const member = await createEligibleShuttleMember(account, "RESPONSE");
+    const route = await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({
+        code: "SH-RESPONSE",
+        name: "Response Contract Route",
+        stops: ["Synthetic Start", "Synthetic School"],
+        monthlyRate: 123000,
+      })
+      .expect(201);
+
+    const created = await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ memberId: member.id, routeId: route.body.id, startDate: "2026-11-01" })
+      .expect(201);
+
+    expect(created.body).toMatchObject({
+      memberId: member.id,
+      routeId: route.body.id,
+      effectiveMonthlyRate: 123000,
+      member: { id: member.id, memberNo: member.memberNo, name: member.name },
+      route: { id: route.body.id, monthlyRate: 123000 },
+    });
+    expect(typeof created.body.effectiveMonthlyRate).toBe("number");
+    expect(typeof created.body.route.monthlyRate).toBe("number");
+    expect(created.body).not.toHaveProperty("invoices");
+    expect(created.body).not.toHaveProperty("payerContact");
+    expect(created.body.member).not.toHaveProperty("email");
+    expect(created.body.member).not.toHaveProperty("phone");
+
+    const student = await prisma.masterDataRecord.create({
+      data: {
+        tenantId: account.tenantId,
+        type: "STUDENT",
+        identifier: "STUDENT-RESPONSE",
+        fullName: "Synthetic Response Student",
+        className: "10-Synthetic",
+        email: "student-response@example.test",
+        phone: "08000000000",
+        externalSimsId: "external-synthetic-id",
+      },
+    });
+    const studentCreated = await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ studentIdentityId: student.id, routeId: route.body.id, startDate: "2026-11-01" })
+      .expect(201);
+    expect(studentCreated.body.studentIdentity).toMatchObject({
+      id: student.id,
+      identifier: student.identifier,
+      fullName: student.fullName,
+    });
+    expect(studentCreated.body.studentIdentity).not.toHaveProperty("email");
+    expect(studentCreated.body.studentIdentity).not.toHaveProperty("phone");
+    expect(studentCreated.body.studentIdentity).not.toHaveProperty("className");
+    expect(studentCreated.body.studentIdentity).not.toHaveProperty("externalSimsId");
+    expect(typeof studentCreated.body.effectiveMonthlyRate).toBe("number");
+    expect(typeof studentCreated.body.route.monthlyRate).toBe("number");
+
+    const listed = await agent.get("/api/v1/shuttle/subscriptions?page=1&pageSize=10").expect(200);
+    expect(listed.body.data).toHaveLength(2);
+    const listedMember = listed.body.data.find((item: { id: string }) => item.id === created.body.id);
+    const listedStudent = listed.body.data.find((item: { id: string }) => item.id === studentCreated.body.id);
+    expect(listedMember).toMatchObject({
+      id: created.body.id,
+      effectiveMonthlyRate: 123000,
+      member: { id: member.id, memberNo: member.memberNo, name: member.name },
+    });
+    expect(typeof listedMember.effectiveMonthlyRate).toBe("number");
+    expect(typeof listedMember.route.monthlyRate).toBe("number");
+    expect(listedMember).not.toHaveProperty("invoices");
+    expect(typeof listedStudent.effectiveMonthlyRate).toBe("number");
+    expect(typeof listedStudent.route.monthlyRate).toBe("number");
+    expect(listedStudent.studentIdentity).not.toHaveProperty("externalSimsId");
+    expect(listedStudent).not.toHaveProperty("invoices");
+  });
+
+  it("rejects a zero-rider direct write with the named PostgreSQL check constraint", async () => {
+    const account = await createAccount("shuttle-rider-xor");
+    const route = await prisma.shuttleRoute.create({
+      data: {
+        tenantId: account.tenantId,
+        code: "SH-XOR-ZERO",
+        name: "Zero Rider Constraint Route",
+        stops: ["Synthetic Start", "Synthetic School"],
+        monthlyRate: 100000,
+      },
+    });
+    const error = await prisma.shuttleSubscription
+      .create({
+        data: {
+          tenantId: account.tenantId,
+          routeId: route.id,
+          startDate: new Date("2026-11-01T00:00:00.000Z"),
+        },
+      })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Prisma.PrismaClientUnknownRequestError);
+    expect(error instanceof Error ? error.message : "").toContain("23514");
+    expect(error instanceof Error ? error.message : "").toContain("ShuttleSubscription_exactly_one_rider_check");
+  });
+
+  it("rejects a dual-rider direct write with the named PostgreSQL check constraint", async () => {
+    const account = await createAccount("shuttle-rider-xor-dual");
+    const member = await createEligibleShuttleMember(account, "XOR-DUAL");
+    const [route, student] = await Promise.all([
+      prisma.shuttleRoute.create({
+        data: {
+          tenantId: account.tenantId,
+          code: "SH-XOR-DUAL",
+          name: "Dual Rider Constraint Route",
+          stops: ["Synthetic Start", "Synthetic School"],
+          monthlyRate: 100000,
+        },
+      }),
+      prisma.masterDataRecord.create({
+        data: {
+          tenantId: account.tenantId,
+          type: "STUDENT",
+          identifier: "STUDENT-XOR-DUAL",
+          fullName: "Synthetic XOR Dual Student",
+        },
+      }),
+    ]);
+    const error = await prisma.shuttleSubscription
+      .create({
+        data: {
+          tenantId: account.tenantId,
+          memberId: member.id,
+          studentIdentityId: student.id,
+          routeId: route.id,
+          startDate: new Date("2026-11-01T00:00:00.000Z"),
+        },
+      })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Prisma.PrismaClientUnknownRequestError);
+    expect(error instanceof Error ? error.message : "").toContain("23514");
+    expect(error instanceof Error ? error.message : "").toContain("ShuttleSubscription_exactly_one_rider_check");
+  });
+
+  it("rejects zero-rider and dual-rider requests while preserving read-role and tenant policy", async () => {
+    const account = await createAccount("shuttle-rider-api-policy");
+    const foreign = await createAccount("shuttle-rider-api-policy-foreign");
+    const agent = request.agent(app);
+    const foreignAgent = request.agent(app);
+    const signedIn = await login(agent, account);
+    await login(foreignAgent, foreign);
+    const csrf = signedIn.body.csrfToken as string;
+    const member = await createEligibleShuttleMember(account, "API-XOR");
+    const [route, student] = await Promise.all([
+      prisma.shuttleRoute.create({
+        data: {
+          tenantId: account.tenantId,
+          code: "SH-API-XOR",
+          name: "API Rider Validation Route",
+          stops: ["Synthetic Start", "Synthetic School"],
+          monthlyRate: 100000,
+        },
+      }),
+      prisma.masterDataRecord.create({
+        data: {
+          tenantId: account.tenantId,
+          type: "STUDENT",
+          identifier: "STUDENT-API-XOR",
+          fullName: "Synthetic API XOR Student",
+        },
+      }),
+    ]);
+
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ routeId: route.id, startDate: "2026-11-01" })
+      .expect(400);
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ memberId: member.id, studentIdentityId: student.id, routeId: route.id, startDate: "2026-11-01" })
+      .expect(400);
+    expect(await prisma.shuttleSubscription.count({ where: { tenantId: account.tenantId } })).toBe(0);
+
+    await agent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", csrf)
+      .send({ memberId: member.id, routeId: route.id, startDate: "2026-11-01" })
+      .expect(201);
+    expect((await foreignAgent.get("/api/v1/shuttle/subscriptions").expect(200)).body.data).toEqual([]);
+
+    const viewer = await createTenantUser(account, "shuttle-subscription-viewer", "VIEWER");
+    const viewerAgent = request.agent(app);
+    const viewerSignedIn = await login(viewerAgent, viewer);
+    await viewerAgent.get("/api/v1/shuttle/subscriptions").expect(200);
+    await viewerAgent
+      .post("/api/v1/shuttle/subscriptions")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", viewerSignedIn.body.csrfToken as string)
+      .send({ memberId: member.id, routeId: route.id, startDate: "2026-11-02" })
+      .expect(403);
+  });
+
+  it("maps observed Shuttle partial-index P2002 metadata without masking generic conflicts", async () => {
+    const account = await createAccount("shuttle-p2002-metadata");
+    const member = await createEligibleShuttleMember(account, "P2002");
+    const route = await prisma.shuttleRoute.create({
+      data: {
+        tenantId: account.tenantId,
+        code: "SH-P2002",
+        name: "P2002 Metadata Route",
+        stops: ["Synthetic Start", "Synthetic School"],
+        monthlyRate: 100000,
+      },
+    });
+    await prisma.shuttleSubscription.create({
+      data: {
+        tenantId: account.tenantId,
+        memberId: member.id,
+        routeId: route.id,
+        startDate: new Date("2026-11-01T00:00:00.000Z"),
+      },
+    });
+    const shuttleConflict = await prisma.shuttleSubscription
+      .create({
+        data: {
+          tenantId: account.tenantId,
+          memberId: member.id,
+          routeId: route.id,
+          startDate: new Date("2026-11-02T00:00:00.000Z"),
+        },
+      })
+      .then(() => undefined, (error: unknown) => error);
+    expect(shuttleConflict).toMatchObject({ code: "P2002" });
+    expect(isActiveShuttleSubscriptionUniqueConflict(shuttleConflict)).toBe(true);
+
+    const genericConflict = await prisma.shuttleRoute
+      .create({
+        data: {
+          tenantId: account.tenantId,
+          code: route.code,
+          name: "Generic Unique Conflict",
+          stops: ["Synthetic Start", "Synthetic School"],
+          monthlyRate: 100000,
+        },
+      })
+      .then(() => undefined, (error: unknown) => error);
+    expect(genericConflict).toMatchObject({ code: "P2002" });
+    expect(isActiveShuttleSubscriptionUniqueConflict(genericConflict)).toBe(false);
+
+    const agent = request.agent(app);
+    const signedIn = await login(agent, account);
+    const genericHttpConflict = await agent
+      .post("/api/v1/shuttle/routes")
+      .set("Origin", origin)
+      .set("X-Novo-Csrf", signedIn.body.csrfToken as string)
+      .send({
+        code: route.code,
+        name: "Duplicate Route Through API",
+        stops: ["Synthetic Start", "Synthetic School"],
+        monthlyRate: 100000,
+      })
+      .expect(409);
+    expect(genericHttpConflict.body.error.code).toBe("DUPLICATE_RECORD");
+  });
+
 });

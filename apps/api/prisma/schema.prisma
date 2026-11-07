@@ -198,6 +198,7 @@ model MasterDataRecord {
   tenant           Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   memberships      CooperativeMember[]
   customerSales    Sale[]          @relation("SaleCustomer")
+  shuttleSubscriptions ShuttleSubscription[] @relation("ShuttleStudent")
   @@unique([tenantId, type, identifier])
   @@index([tenantId, type, active, fullName])
   @@index([tenantId, externalSimsId])
@@ -365,15 +366,22 @@ model ShuttleRoute {
 model ShuttleSubscription {
   id        String             @id @default(cuid())
   tenantId  String
-  memberId  String
+  memberId  String?
+  studentIdentityId String?
   routeId   String
   status    SubscriptionStatus @default(ACTIVE)
   startDate DateTime
   endDate   DateTime?
+  effectiveMonthlyRate Decimal? @db.Decimal(14, 2)
+  payerName String?
+  payerContact String?
   tenant    Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  member    CooperativeMember  @relation(fields: [memberId], references: [id])
+  member    CooperativeMember? @relation(fields: [memberId], references: [id])
+  studentIdentity MasterDataRecord? @relation("ShuttleStudent", fields: [studentIdentityId], references: [id], onDelete: Restrict)
   route     ShuttleRoute       @relation(fields: [routeId], references: [id])
   invoices  Invoice[]
+  // PostgreSQL enforces exactly one rider and active-rider uniqueness in
+  // migration 202611040009; Prisma cannot represent these partial indexes/checks.
   @@index([tenantId, status])
 }
 
@@ -407,6 +415,7 @@ model Payment {
   settlements SettlementPayment[]
   @@unique([tenantId, reference])
 }
+
 
 model Settlement {
   id          String              @id @default(cuid())

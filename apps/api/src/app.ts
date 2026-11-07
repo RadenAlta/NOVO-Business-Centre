@@ -17,7 +17,8 @@ import { env } from "./env.js";
 import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
 import { storeSkuInput } from "./store-sku.js";
 import { fingerprintInventoryMutation, inventoryIdempotencyKeySchema } from "./store-inventory-idempotency.js";
-import { withStoreTransactionRetry } from "./store-transaction.js";
+import { withSerializableTransactionRetry, withStoreTransactionRetry } from "./store-transaction.js";
+import { isActiveShuttleSubscriptionUniqueConflict } from "./shuttle-subscription-unique.js";
 import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
@@ -59,6 +60,7 @@ const me = (request: Request): AuthContext => (request as AuthenticatedRequest).
 const decimalJson = <T>(value: T): T => JSON.parse(JSON.stringify(value, (_key, item) =>
   typeof item === "object" && item !== null && "toNumber" in item ? (item as { toNumber(): number }).toNumber() : item,
 )) as T;
+const auditSnapshot = (value: unknown): Prisma.InputJsonValue => decimalJson(value) as Prisma.InputJsonValue;
 
 app.disable("x-powered-by");
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
@@ -721,6 +723,19 @@ async function serializableStore<T>(operation: (tx: Prisma.TransactionClient) =>
     }),
   );
 }
+async function serializableShuttle<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+  return withSerializableTransactionRetry(
+    () => prisma.$transaction(operation, {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 5_000,
+      timeout: 10_000,
+    }),
+    {
+      code: "SHUTTLE_CONCURRENT_CONFLICT",
+      message: "Shuttle records changed concurrently. Refresh and try again.",
+    },
+  );
+}
 api.post("/sales", requireRoles("OWNER", "ADMIN", "CASHIER", "SUPER_ADMIN"), asyncRoute(async (request, response) => {
   const input = storeCheckoutInput.parse(request.body);
   const idempotencyKey = z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/).parse(request.header("Idempotency-Key"));
@@ -762,32 +777,156 @@ api.get("/sales/:id", requireRoles(...storeReadRoles), asyncRoute(async (request
 api.get("/sales/:id/receipt", requireRoles(...storeReadRoles), asyncRoute(async (request,response)=>{const sale=await storeSaleForTenant(id.parse(request.params.id),me(request).tenantId);if(!sale)throw new HttpError(404,"NOT_FOUND","Sale not found.");response.json({printable:true,receipt:storeSaleResponse(sale,false)});}));
 api.post("/sales/:id/void", requireRoles(...storeVoidRoles), asyncRoute(async (request,response)=>{const saleId=id.parse(request.params.id);const input=z.object({reason:z.string().trim().min(5).max(500)}).strict().parse(request.body);const actor=me(request);const sale=await serializableStore(async(tx)=>{const current=await tx.sale.findFirst({where:{id:saleId,tenantId:actor.tenantId},include:{items:true}});if(!current)throw new HttpError(404,"NOT_FOUND","Sale not found.");const claimed=await tx.sale.updateMany({where:{id:current.id,tenantId:actor.tenantId,status:"COMPLETED"},data:{status:"VOIDED",voidReason:input.reason,voidedAt:new Date(),voidedById:actor.id}});if(claimed.count!==1)throw new HttpError(409,"SALE_ALREADY_VOIDED","This sale was already voided.");for(const item of current.items){const product=await tx.product.update({where:{id:item.productId},data:{stockOnHand:{increment:item.quantity}},select:{stockOnHand:true}});await tx.stockMovement.create({data:{tenantId:actor.tenantId,productId:item.productId,saleId:current.id,quantity:item.quantity,reason:"POS_VOID",reference:current.receiptNo,balanceAfter:product.stockOnHand,performedById:actor.id}});}await tx.auditLog.create({data:{tenantId:actor.tenantId,actorId:actor.id,action:"void",entityType:"Sale",entityId:current.id,after:{receiptNo:current.receiptNo,reason:input.reason}}});return tx.sale.findUniqueOrThrow({where:{id:current.id},include:storeSaleInclude});});response.json(storeSaleResponse(sale,storeHppRoles.includes(actor.role)));}));
 
+const shuttleRouteCreateInput = z.object({
+  code: z.string().trim().min(2).max(30),
+  name: z.string().trim().min(2).max(120),
+  stops: z.array(z.string().trim().min(2)).min(2).max(30),
+  monthlyRate: z.coerce.number().finite().int().min(1).max(999_999_999),
+}).strict();
+const shuttleRouteListQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  active: z.enum(["true", "false"]).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
+const shuttleSubscriptionCreateInput = z.object({
+  memberId: id.optional(),
+  studentIdentityId: id.optional(),
+  routeId: id,
+  startDate: date,
+  endDate: date.optional(),
+  payerName: z.string().trim().min(2).max(120).optional(),
+  payerContact: z.string().trim().min(5).max(120).optional(),
+}).strict().superRefine((input, context) => {
+  if (input.endDate && input.endDate.getTime() < input.startDate.getTime()) {
+    context.addIssue({ code: "custom", path: ["endDate"], message: "End date cannot be before start date." });
+  }
+  if ((input.memberId ? 1 : 0) + (input.studentIdentityId ? 1 : 0) !== 1) {
+    context.addIssue({ code: "custom", message: "Provide exactly one student identity or eligible cooperative member." });
+  }
+});
+const shuttleSubscriptionListQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  routeId: id.optional(),
+  status: z.enum(["ACTIVE", "PAUSED", "CANCELLED"]).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
+const shuttleOpsRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "ADMIN_STAFF", "FLEET_MANAGER"];
+const shuttleFinanceRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "TREASURER"];
+const shuttleSubscriptionResponseSelect = {
+  id: true,
+  routeId: true,
+  memberId: true,
+  studentIdentityId: true,
+  status: true,
+  startDate: true,
+  endDate: true,
+  effectiveMonthlyRate: true,
+  member: { select: { id: true, memberNo: true, name: true } },
+  studentIdentity: { select: { id: true, identifier: true, fullName: true } },
+  route: { select: { id: true, code: true, name: true, active: true, monthlyRate: true } },
+} satisfies Prisma.ShuttleSubscriptionSelect;
+type ShuttleSubscriptionResponseRecord = Prisma.ShuttleSubscriptionGetPayload<{
+  select: typeof shuttleSubscriptionResponseSelect;
+}>;
+function shuttleRupiahResponseValue(
+  value: Prisma.Decimal | null,
+  field: "effectiveMonthlyRate" | "route.monthlyRate",
+): number | null {
+  if (value === null) return null;
+  if (
+    !value.isInteger() ||
+    value.lessThan(1) ||
+    value.greaterThan(999_999_999) ||
+    !Number.isSafeInteger(value.toNumber())
+  ) {
+    throw new HttpError(500, "INVALID_SHUTTLE_RATE", `Stored ${field} is outside the approved whole-Rupiah contract.`);
+  }
+  return value.toNumber();
+}
+
+function shuttleSubscriptionResponse(subscription: ShuttleSubscriptionResponseRecord) {
+  const { effectiveMonthlyRate, route, ...safeSubscription } = subscription;
+  return {
+    ...safeSubscription,
+    effectiveMonthlyRate: shuttleRupiahResponseValue(effectiveMonthlyRate, "effectiveMonthlyRate"),
+    route: {
+      ...route,
+      monthlyRate: shuttleRupiahResponseValue(route.monthlyRate, "route.monthlyRate"),
+    },
+  };
+}
+
 api.get("/shuttle/routes", asyncRoute(async (request, response) => {
-  response.json({ data: decimalJson(await prisma.shuttleRoute.findMany({ where: { tenantId: me(request).tenantId }, orderBy: { name: "asc" } })) });
+  const query = shuttleRouteListQuery.parse(request.query);
+  const where = {
+    tenantId: me(request).tenantId,
+    ...(query.active ? { active: query.active === "true" } : {}),
+    ...(query.q ? { OR: [{ code: { contains: query.q, mode: "insensitive" as const } }, { name: { contains: query.q, mode: "insensitive" as const } }] } : {}),
+  };
+  const [total, routes] = await prisma.$transaction([
+    prisma.shuttleRoute.count({ where }),
+    prisma.shuttleRoute.findMany({ where, orderBy: [{ name: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+  ]);
+  response.json({ data: decimalJson(routes), pagination: storePage(query.page, query.pageSize, total) });
 }));
 
 api.post("/shuttle/routes", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER"), asyncRoute(async (request, response) => {
-  const input = z.object({ code: z.string().trim().min(2).max(30), name: z.string().trim().min(2).max(120), stops: z.array(z.string().trim().min(2)).min(2).max(30), monthlyRate: money.positive() }).parse(request.body);
-  const route = await prisma.shuttleRoute.create({ data: { ...input, tenantId: me(request).tenantId } });
-  await audit(me(request), "create", "ShuttleRoute", route.id, route);
+  const input = shuttleRouteCreateInput.parse(request.body);
+  const actor = me(request);
+  const route = await serializableShuttle(async (tx) => {
+    const created = await tx.shuttleRoute.create({ data: { ...input, tenantId: actor.tenantId } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "ShuttleRoute", entityId: created.id, after: auditSnapshot(created) } });
+    return created;
+  });
   response.status(201).json(decimalJson(route));
 }));
 
 api.get("/shuttle/subscriptions", asyncRoute(async (request, response) => {
-  const data = await prisma.shuttleSubscription.findMany({ where: { tenantId: me(request).tenantId }, include: { member: true, route: true, invoices: true }, orderBy: { startDate: "desc" } });
-  response.json({ data: decimalJson(data) });
+  const query = shuttleSubscriptionListQuery.parse(request.query);
+  const where = {
+    tenantId: me(request).tenantId,
+    ...(query.routeId ? { routeId: query.routeId } : {}),
+    ...(query.status ? { status: query.status } : {}),
+    ...(query.q ? {
+      OR: [
+        { member: { name: { contains: query.q, mode: "insensitive" as const } } },
+        { member: { memberNo: { contains: query.q, mode: "insensitive" as const } } },
+        { route: { code: { contains: query.q, mode: "insensitive" as const } } },
+        { route: { name: { contains: query.q, mode: "insensitive" as const } } },
+      ],
+    } : {}),
+  };
+  const [total, subscriptions] = await prisma.$transaction([
+    prisma.shuttleSubscription.count({ where }),
+    prisma.shuttleSubscription.findMany({ where, select: shuttleSubscriptionResponseSelect, orderBy: [{ startDate: "desc" }, { id: "desc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize }),
+  ]);
+  response.json({ data: subscriptions.map(shuttleSubscriptionResponse), pagination: storePage(query.page, query.pageSize, total) });
 }));
 
 api.post("/shuttle/subscriptions", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER"), asyncRoute(async (request, response) => {
-  const input = z.object({ memberId: id, routeId: id, startDate: date, endDate: date.optional() }).parse(request.body);
-  const [member, route] = await Promise.all([
-    requireEligibleCooperativeMember(input.memberId, me(request).tenantId),
-    prisma.shuttleRoute.findFirst({ where: { id: input.routeId, tenantId: me(request).tenantId, active: true } }),
-  ]);
-  if (!member || !route) throw new HttpError(400, "INVALID_SUBSCRIPTION", "Member or route is unavailable.");
-  const subscription = await prisma.shuttleSubscription.create({ data: { ...input, tenantId: me(request).tenantId } });
-  await audit(me(request), "create", "ShuttleSubscription", subscription.id, subscription);
-  response.status(201).json(subscription);
+  const input = shuttleSubscriptionCreateInput.parse(request.body);
+  const actor = me(request);
+  const subscription = await serializableShuttle(async (tx) => {
+    const [member, student, route] = await Promise.all([
+      input.memberId ? tx.cooperativeMember.findFirst({ where: { id: input.memberId, tenantId: actor.tenantId }, include: { identity: { select: { id: true, type: true, active: true } } } }) : null,
+      input.studentIdentityId ? tx.masterDataRecord.findFirst({ where: { id: input.studentIdentityId, tenantId: actor.tenantId, type: "STUDENT", active: true } }) : null,
+      tx.shuttleRoute.findFirst({ where: { id: input.routeId, tenantId: actor.tenantId, active: true } }),
+    ]);
+    if (input.memberId && !member) throw new HttpError(404, "NOT_FOUND", "Member not found.");
+    if (member && (!member.active || !member.identity || !member.identity.active || member.identity.type === "STUDENT")) {
+      throw new HttpError(400, "INELIGIBLE_COOPERATIVE_MEMBER", "An active teacher or employee identity is required for new cooperative-benefit operations.");
+    }
+    if (input.studentIdentityId && !student) throw new HttpError(400, "INVALID_SHUTTLE_STUDENT", "An active same-tenant student identity is required.");
+    if (!route) throw new HttpError(400, "INVALID_SUBSCRIPTION", "Member or route is unavailable.");
+    const existing = await tx.shuttleSubscription.findFirst({ where: { tenantId: actor.tenantId, status: "ACTIVE", routeId: route.id, ...(student ? { studentIdentityId: student.id } : { memberId: member!.id }) } });
+    if (existing) throw new HttpError(409, "DUPLICATE_ACTIVE_SUBSCRIPTION", "This rider already has an active subscription for the route.");
+    const created = await tx.shuttleSubscription.create({ data: { ...input, tenantId: actor.tenantId, effectiveMonthlyRate: route.monthlyRate } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "ShuttleSubscription", entityId: created.id, after: auditSnapshot(created) } });
+    return tx.shuttleSubscription.findUniqueOrThrow({ where: { id: created.id }, select: shuttleSubscriptionResponseSelect });
+  });
+  response.status(201).json(shuttleSubscriptionResponse(subscription));
 }));
 
 api.post("/shuttle/subscriptions/:id/invoices", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
@@ -986,6 +1125,7 @@ app.use((error: unknown, request: Request, response: Response, _next: NextFuncti
   if (error instanceof z.ZodError) return response.status(400).json({ error: { code: "VALIDATION_ERROR", message: "Check the submitted fields.", details: error.flatten() } });
   if (error instanceof HttpError) return response.status(error.status).json({ error: { code: error.code, message: error.message, details: error.details } });
   if (error instanceof multer.MulterError) return response.status(400).json({ error: { code: "INVALID_IMPORT_UPLOAD", message: "Upload one .xlsx workbook within the permitted size limit." } });
+  if (isActiveShuttleSubscriptionUniqueConflict(error)) return response.status(409).json({ error: { code: "DUPLICATE_ACTIVE_SUBSCRIPTION", message: "This rider already has an active subscription for the route." } });
   if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "P2002") return response.status(409).json({ error: { code: "DUPLICATE_RECORD", message: "A record with that identifier already exists." } });
   if (typeof error === "object" && error && "code" in error && (error as { code: string }).code === "P2034") return response.status(409).json({ error: { code: "IMPORT_CONFLICT", message: "The import changed concurrently. Refresh the preview and try again." } });
   return response.status(500).json({ error: { code: "INTERNAL_ERROR", message: "An unexpected error occurred." } });

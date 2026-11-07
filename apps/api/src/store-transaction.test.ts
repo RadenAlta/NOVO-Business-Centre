@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
-import { withStoreTransactionRetry } from "./store-transaction.js";
+import { withSerializableTransactionRetry, withStoreTransactionRetry } from "./store-transaction.js";
 
 function prismaError(code: string): Prisma.PrismaClientKnownRequestError {
   return new Prisma.PrismaClientKnownRequestError(
@@ -11,6 +11,25 @@ function prismaError(code: string): Prisma.PrismaClientKnownRequestError {
 }
 
 describe("Store P2034 transaction retry", () => {
+  it("uses the caller's domain-specific conflict contract", async () => {
+    const execute = vi.fn(async () => {
+      throw prismaError("P2034");
+    });
+
+    await expect(
+      withSerializableTransactionRetry(execute, {
+        code: "SHUTTLE_CONCURRENT_CONFLICT",
+        message: "Shuttle records changed concurrently.",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      code: "SHUTTLE_CONCURRENT_CONFLICT",
+      message: "Shuttle records changed concurrently.",
+    });
+
+    expect(execute).toHaveBeenCalledTimes(3);
+  });
+
   it.each([0, 1, 2])(
     "succeeds after %i retryable conflicts",
     async (conflicts) => {
