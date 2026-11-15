@@ -11,12 +11,15 @@
     "dev": "pnpm --parallel --filter @novo/api --filter @novo/web dev",
     "build": "pnpm -r --if-present build",
     "test": "pnpm -r --if-present test",
+    "test:e2e": "playwright test",
+    "test:e2e:report": "playwright show-report",
     "lint": "pnpm -r --if-present lint",
     "format": "prettier --write .",
     "db:generate": "pnpm --filter @novo/api prisma:generate",
     "db:migrate": "pnpm --filter @novo/api prisma:migrate"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "prettier": "^3.6.2"
   }
 }

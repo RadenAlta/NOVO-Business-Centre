@@ -1,0 +1,832 @@
+{
+  "task": "activity-category-suggestion",
+  "model_version": "activity-category-v0.2-39098d6f4f26",
+  "dataset_version": "activity-dataset-v0.2",
+  "label_version": "activity-category-v0.1",
+  "seed": 20261105,
+  "dataset_sha256": "39098d6f4f26848ab85f938450686d254f613a734e4e67b3ebf4d23cbf865b47",
+  "dataset_provenance": [
+    "synthetic-generator-v2; dataset=activity-dataset-v0.2; seed=20261105; no-personal-data"
+  ],
+  "split_strategy": "template-family-grouped fixed split; validation selects model; final hold-out remains frozen unless explicitly released after internal review",
+  "class_distribution": {
+    "TRAIN": {
+      "ADMINISTRATION": 18,
+      "INVENTORY": 18,
+      "SALES": 18,
+      "SERVICE": 18
+    },
+    "VALIDATION": {
+      "ADMINISTRATION": 9,
+      "INVENTORY": 9,
+      "SALES": 9,
+      "SERVICE": 9
+    },
+    "TEST": {
+      "ADMINISTRATION": 9,
+      "INVENTORY": 9,
+      "SALES": 9,
+      "SERVICE": 9
+    }
+  },
+  "candidates": {
+    "dummy_most_frequent": {
+      "validation": {
+        "macro_f1": 0.1,
+        "weighted_f1": 0.1,
+        "accuracy": 0.25,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 9
+          },
+          "SALES": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 9
+          },
+          "SERVICE": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 9
+          },
+          "ADMINISTRATION": {
+            "precision": 0.25,
+            "recall": 1.0,
+            "f1": 0.4,
+            "support": 9
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            0,
+            0,
+            0,
+            9
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ]
+        ]
+      },
+      "validation_error_analysis": [
+        {
+          "activity_id": "act-syn-v02-20261105-06-00",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Bahan segar dipindahkan ke penyimpanan dingin dan lokasi stok harus diperbarui."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-06-01",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Dapur mengubah lokasi beras cadangan agar pemeriksaan persediaan berikutnya akurat."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-06-02",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Rak bahan kering ditata ulang sehingga catatan lokasi barang perlu disesuaikan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-07-00",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Kiriman pemasok kurang dua dus; prioritas catatan adalah menindaklanjuti penerimaan stok, bukan pembayaran."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-07-01",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Toko menerima barang tidak lengkap dan petugas perlu mencatat selisih persediaan sebelum menghubungi pemasok."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-07-02",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Daftar penerimaan menunjukkan item belum datang; label dipilih INVENTORY karena tindakan utama adalah verifikasi stok."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-08-00",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Barang dipindahkan dari gudang ke unit katering; catatan utama adalah perpindahan persediaan antar lokasi."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-08-01",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Unit toko menyerahkan gelas kemasan ke dapur dan saldo stok kedua unit perlu diperbarui."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-08-02",
+          "actual": "INVENTORY",
+          "predicted": "ADMINISTRATION",
+          "note": "Pemindahan bahan antar gudang membutuhkan pencatatan kuantitas sebelum aktivitas layanan dilanjutkan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-18-00",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Antrean kasir meningkat saat istirahat dan penutupan transaksi perlu dipantau."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-18-01",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Toko membuka jalur pembayaran tambahan karena banyak pembeli menunggu."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-18-02",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Petugas memeriksa proses checkout untuk mengurangi penundaan transaksi penjualan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-19-00",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Nilai pesanan katering dibandingkan dengan invoice; label SALES karena fokusnya adalah nilai transaksi yang dijual."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-19-01",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Rekap paket makan perlu dicocokkan dengan total tagihan pelanggan sintetis."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-19-02",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Unit katering meninjau selisih jumlah pesanan dan nominal penjualan sebelum faktur diselesaikan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-20-00",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Diskon program koperasi diterapkan pada transaksi dan kasir memeriksa total sesudah potongan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-20-01",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Penjualan promosi membutuhkan verifikasi bahwa harga akhir sudah benar."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-20-02",
+          "actual": "SALES",
+          "predicted": "ADMINISTRATION",
+          "note": "Petugas meninjau penggunaan kupon agar pendapatan toko tercatat sesuai transaksi."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-30-00",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Permintaan penanganan paket khusus dicatat sebagai SERVICE karena tindakan utama adalah pemenuhan layanan, bukan penjualan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-30-01",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Dapur menyesuaikan penyajian pesanan dengan catatan layanan yang telah disetujui."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-30-02",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Koordinasi pengantaran khusus dilakukan agar kebutuhan layanan terpenuhi tepat waktu."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-31-00",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Laporan ketidaknyamanan perjalanan ditinjau untuk menentukan tindak lanjut layanan shuttle."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-31-01",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Operator mencatat insiden ringan pada rute dan menghubungi petugas terkait."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-31-02",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Keluhan mengenai informasi jadwal memerlukan respons dari tim layanan antar jemput."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-32-00",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Antrean layanan meningkat dan petugas mengatur urutan bantuan agar pengguna tidak menunggu lama."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-32-01",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Unit operasional membagi tugas pelayanan pada periode ramai."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-32-02",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Catatan layanan menyoroti waktu tunggu yang perlu diperbaiki pada shift berikutnya."
+        }
+      ],
+      "development_group_cv": {
+        "macro_f1": {
+          "mean": 0.1,
+          "std": 0.0,
+          "folds": [
+            0.1,
+            0.1,
+            0.1
+          ]
+        },
+        "weighted_f1": {
+          "mean": 0.1,
+          "std": 0.0,
+          "folds": [
+            0.1,
+            0.1,
+            0.1
+          ]
+        },
+        "accuracy": {
+          "mean": 0.25,
+          "std": 0.0,
+          "folds": [
+            0.25,
+            0.25,
+            0.25
+          ]
+        }
+      },
+      "final_holdout": {
+        "macro_f1": 0.1,
+        "weighted_f1": 0.1,
+        "accuracy": 0.25,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 9
+          },
+          "SALES": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 9
+          },
+          "SERVICE": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 9
+          },
+          "ADMINISTRATION": {
+            "precision": 0.25,
+            "recall": 1.0,
+            "f1": 0.4,
+            "support": 9
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            0,
+            0,
+            0,
+            9
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ]
+        ]
+      }
+    },
+    "tfidf_logistic_regression": {
+      "validation": {
+        "macro_f1": 0.864268,
+        "weighted_f1": 0.864268,
+        "accuracy": 0.861111,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 1.0,
+            "recall": 0.777778,
+            "f1": 0.875,
+            "support": 9
+          },
+          "SALES": {
+            "precision": 0.692308,
+            "recall": 1.0,
+            "f1": 0.818182,
+            "support": 9
+          },
+          "SERVICE": {
+            "precision": 1.0,
+            "recall": 0.777778,
+            "f1": 0.875,
+            "support": 9
+          },
+          "ADMINISTRATION": {
+            "precision": 0.888889,
+            "recall": 0.888889,
+            "f1": 0.888889,
+            "support": 9
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            7,
+            2,
+            0,
+            0
+          ],
+          [
+            0,
+            9,
+            0,
+            0
+          ],
+          [
+            0,
+            1,
+            7,
+            1
+          ],
+          [
+            0,
+            1,
+            0,
+            8
+          ]
+        ]
+      },
+      "validation_error_analysis": [
+        {
+          "activity_id": "act-syn-v02-20261105-07-00",
+          "actual": "INVENTORY",
+          "predicted": "SALES",
+          "note": "Kiriman pemasok kurang dua dus; prioritas catatan adalah menindaklanjuti penerimaan stok, bukan pembayaran."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-07-02",
+          "actual": "INVENTORY",
+          "predicted": "SALES",
+          "note": "Daftar penerimaan menunjukkan item belum datang; label dipilih INVENTORY karena tindakan utama adalah verifikasi stok."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-30-00",
+          "actual": "SERVICE",
+          "predicted": "SALES",
+          "note": "Permintaan penanganan paket khusus dicatat sebagai SERVICE karena tindakan utama adalah pemenuhan layanan, bukan penjualan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-32-01",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Unit operasional membagi tugas pelayanan pada periode ramai."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-42-00",
+          "actual": "ADMINISTRATION",
+          "predicted": "SALES",
+          "note": "Usulan harga toko menunggu persetujuan; label ADMINISTRATION karena tindakan utamanya adalah pencatatan persetujuan, bukan penjualan."
+        }
+      ],
+      "development_group_cv": {
+        "macro_f1": {
+          "mean": 0.732706,
+          "std": 0.071159,
+          "folds": [
+            0.77972,
+            0.786255,
+            0.632143
+          ]
+        },
+        "weighted_f1": {
+          "mean": 0.732706,
+          "std": 0.071159,
+          "folds": [
+            0.77972,
+            0.786255,
+            0.632143
+          ]
+        },
+        "accuracy": {
+          "mean": 0.736111,
+          "std": 0.078567,
+          "folds": [
+            0.791667,
+            0.791667,
+            0.625
+          ]
+        }
+      },
+      "final_holdout": {
+        "macro_f1": 0.916409,
+        "weighted_f1": 0.916409,
+        "accuracy": 0.916667,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 0.8,
+            "recall": 0.888889,
+            "f1": 0.842105,
+            "support": 9
+          },
+          "SALES": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 9
+          },
+          "SERVICE": {
+            "precision": 0.875,
+            "recall": 0.777778,
+            "f1": 0.823529,
+            "support": 9
+          },
+          "ADMINISTRATION": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 9
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            8,
+            0,
+            1,
+            0
+          ],
+          [
+            0,
+            9,
+            0,
+            0
+          ],
+          [
+            2,
+            0,
+            7,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ]
+        ]
+      }
+    },
+    "tfidf_linear_svc": {
+      "validation": {
+        "macro_f1": 0.864268,
+        "weighted_f1": 0.864268,
+        "accuracy": 0.861111,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 1.0,
+            "recall": 0.777778,
+            "f1": 0.875,
+            "support": 9
+          },
+          "SALES": {
+            "precision": 0.692308,
+            "recall": 1.0,
+            "f1": 0.818182,
+            "support": 9
+          },
+          "SERVICE": {
+            "precision": 1.0,
+            "recall": 0.777778,
+            "f1": 0.875,
+            "support": 9
+          },
+          "ADMINISTRATION": {
+            "precision": 0.888889,
+            "recall": 0.888889,
+            "f1": 0.888889,
+            "support": 9
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            7,
+            2,
+            0,
+            0
+          ],
+          [
+            0,
+            9,
+            0,
+            0
+          ],
+          [
+            0,
+            1,
+            7,
+            1
+          ],
+          [
+            0,
+            1,
+            0,
+            8
+          ]
+        ]
+      },
+      "validation_error_analysis": [
+        {
+          "activity_id": "act-syn-v02-20261105-07-00",
+          "actual": "INVENTORY",
+          "predicted": "SALES",
+          "note": "Kiriman pemasok kurang dua dus; prioritas catatan adalah menindaklanjuti penerimaan stok, bukan pembayaran."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-07-02",
+          "actual": "INVENTORY",
+          "predicted": "SALES",
+          "note": "Daftar penerimaan menunjukkan item belum datang; label dipilih INVENTORY karena tindakan utama adalah verifikasi stok."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-30-00",
+          "actual": "SERVICE",
+          "predicted": "SALES",
+          "note": "Permintaan penanganan paket khusus dicatat sebagai SERVICE karena tindakan utama adalah pemenuhan layanan, bukan penjualan."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-32-01",
+          "actual": "SERVICE",
+          "predicted": "ADMINISTRATION",
+          "note": "Unit operasional membagi tugas pelayanan pada periode ramai."
+        },
+        {
+          "activity_id": "act-syn-v02-20261105-42-00",
+          "actual": "ADMINISTRATION",
+          "predicted": "SALES",
+          "note": "Usulan harga toko menunggu persetujuan; label ADMINISTRATION karena tindakan utamanya adalah pencatatan persetujuan, bukan penjualan."
+        }
+      ],
+      "development_group_cv": {
+        "macro_f1": {
+          "mean": 0.7304,
+          "std": 0.047621,
+          "folds": [
+            0.77972,
+            0.745455,
+            0.666026
+          ]
+        },
+        "weighted_f1": {
+          "mean": 0.7304,
+          "std": 0.047621,
+          "folds": [
+            0.77972,
+            0.745455,
+            0.666026
+          ]
+        },
+        "accuracy": {
+          "mean": 0.736111,
+          "std": 0.051967,
+          "folds": [
+            0.791667,
+            0.75,
+            0.666667
+          ]
+        }
+      },
+      "final_holdout": {
+        "macro_f1": 0.916409,
+        "weighted_f1": 0.916409,
+        "accuracy": 0.916667,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 0.8,
+            "recall": 0.888889,
+            "f1": 0.842105,
+            "support": 9
+          },
+          "SALES": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 9
+          },
+          "SERVICE": {
+            "precision": 0.875,
+            "recall": 0.777778,
+            "f1": 0.823529,
+            "support": 9
+          },
+          "ADMINISTRATION": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 9
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            8,
+            0,
+            1,
+            0
+          ],
+          [
+            0,
+            9,
+            0,
+            0
+          ],
+          [
+            2,
+            0,
+            7,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            9
+          ]
+        ]
+      }
+    }
+  },
+  "selected_model": "tfidf_logistic_regression",
+  "selection_rationale": "highest validation macro-F1; ties prefer tfidf_logistic_regression for calibrated probability support",
+  "final_holdout": {
+    "status": "FINAL_HOLDOUT_EXECUTED",
+    "metrics": {
+      "macro_f1": 0.916409,
+      "weighted_f1": 0.916409,
+      "accuracy": 0.916667,
+      "per_class": {
+        "INVENTORY": {
+          "precision": 0.8,
+          "recall": 0.888889,
+          "f1": 0.842105,
+          "support": 9
+        },
+        "SALES": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 9
+        },
+        "SERVICE": {
+          "precision": 0.875,
+          "recall": 0.777778,
+          "f1": 0.823529,
+          "support": 9
+        },
+        "ADMINISTRATION": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 9
+        }
+      },
+      "confusion_matrix_labels": [
+        "INVENTORY",
+        "SALES",
+        "SERVICE",
+        "ADMINISTRATION"
+      ],
+      "confusion_matrix": [
+        [
+          8,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          9,
+          0,
+          0
+        ],
+        [
+          2,
+          0,
+          7,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          9
+        ]
+      ]
+    },
+    "error_analysis": [
+      {
+        "activity_id": "act-syn-v02-20261105-10-01",
+        "actual": "INVENTORY",
+        "predicted": "SERVICE",
+        "note": "Sisa bahan menu siang dicatat agar kebutuhan produksi esok hari dapat direncanakan."
+      },
+      {
+        "activity_id": "act-syn-v02-20261105-33-00",
+        "actual": "SERVICE",
+        "predicted": "INVENTORY",
+        "note": "Kondisi penyajian makanan diperiksa sebelum paket meninggalkan dapur."
+      },
+      {
+        "activity_id": "act-syn-v02-20261105-33-02",
+        "actual": "SERVICE",
+        "predicted": "INVENTORY",
+        "note": "Pemeriksaan layanan dilakukan untuk memastikan paket siap diberikan sesuai standar."
+      }
+    ]
+  },
+  "internal_review_status": "INTERNAL_REVIEW_APPROVED",
+  "environment": {
+    "python": "3.12.13",
+    "scikit_learn": "1.9.1"
+  },
+  "caveats": [
+    "Synthetic development data only; metrics do not establish production quality.",
+    "Predictions are category suggestions for human review and never mutate operational or financial data.",
+    "LinearSVC decision scores are not calibrated probabilities.",
+    "Selected artifact is DEVELOPMENT_ONLY until the frozen final hold-out gate and application integration are separately accepted."
+  ]
+}

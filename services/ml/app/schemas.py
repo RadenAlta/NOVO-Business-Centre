@@ -1,8 +1,39 @@
 from datetime import date
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 class IntentRequest(BaseModel):
     text: str = Field(min_length=3, max_length=2000)
+
+
+class ActivityCategoryRequest(BaseModel):
+    """A de-identified operational note, not a transaction command."""
+
+    note_deidentified: str = Field(min_length=3, max_length=500)
+
+    @field_validator("note_deidentified")
+    @classmethod
+    def reject_blank_note(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) < 3:
+            raise ValueError("note_deidentified must contain at least three non-whitespace characters")
+        return normalized
+
+
+class ActivityCategoryResponse(BaseModel):
+    predicted_category: Literal["INVENTORY", "SALES", "SERVICE", "ADMINISTRATION"]
+    confidence: float | None = Field(ge=0, le=1)
+    decision_score: float | None = None
+    model_version: str
+    label_version: str
+    inference_status: Literal["ok"]
+
+    @model_validator(mode="after")
+    def require_exactly_one_score(self) -> "ActivityCategoryResponse":
+        if (self.confidence is None) == (self.decision_score is None):
+            raise ValueError("exactly one of confidence or decision_score is required")
+        return self
 
 class DemandRequest(BaseModel):
     day_of_week: int = Field(ge=0, le=6)

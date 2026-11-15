@@ -20,12 +20,14 @@ Errors share this shape:
 
 `GET`, `HEAD`, and `OPTIONS` do not require a CSRF header. The React client uses `credentials: "include"`, stores the CSRF token only in memory, deliberately leaves multipart `FormData` content types to the browser, scopes cached protected data to tenant/user/role, and removes that cache on account change or unauthentication. Logout only clears local state after server confirmation (`204`) or an already-invalidated `401`; other failures remain visible and retryable.
 
+Role-gated UI must mirror server delegation rather than inventing a second authorization policy. In particular, `SUPER_ADMIN` delegates to all defined roles in `requireRoles`; the server remains the authorization boundary and every lookup still derives the tenant from the active session.
+
 | Area | Endpoint | Purpose |
 | --- | --- | --- |
 | Master data | `GET/POST/PATCH /master-data`, `PATCH /master-data/:id/active`, `GET/POST /members`, `GET/POST /products` | School identity directory, cooperative-member linkage, and product catalog |
 | Store | `GET/POST /sales`, `POST /sales/:id/void`, `POST /products/:id/receipts`, `POST /products/:id/adjustments`, `GET /products/:id/movements` | POS transactions, sale voids, stock receipts and adjustments, and auditable inventory history |
-| Shuttle | `GET/POST /shuttle/routes`, `GET/POST /shuttle/subscriptions`, `POST /shuttle/subscriptions/:id/invoices` | Route, subscription and billing flow |
-| Billing | `GET /billing/invoices`, `POST /billing/invoices/:id/payments` | Invoice collection with overpayment guard |
+| Shuttle | `GET/POST /shuttle/routes`, `GET/POST /shuttle/subscriptions`, `POST /shuttle/subscriptions/:id/invoices`, billing-period, settlement, and report endpoints | Tenant-scoped route, subscription, billing, settlement, and reporting flow |
+| Billing | `GET /billing/invoices`, `POST /billing/invoices/:id/payments`, `POST /billing/payments/:id/verify`, `POST /billing/payments/:id/reverse` | Invoice collection, verification, reversal, and overpayment guard |
 | Catering | `GET/POST /catering/orders`, `PATCH /catering/orders/:id/status` | Catering order flow |
 | Funding | `GET/POST /funding/accounts`, `POST /funding/accounts/:id/entries` | Savings accounts and immutable ledger entries |
 | Financing | `GET/POST /financing/applications` | Application and receivable schedule creation |
@@ -58,11 +60,49 @@ Inventory writes use serializable database transactions. If an attempted mutatio
 
 `GET /products/:id/movements` returns tenant-scoped stock history and requires authentication, but no idempotency header. Internal `idempotencyKey` and `inputFingerprint` fields are excluded from public movement responses, including successful mutations and replays.
 
+## Shuttle foundation contract
+
+`GET /shuttle/routes` accepts optional `q`, `active`, `page`, and `pageSize` query parameters and returns `{ data, pagination }`. Search covers route code/name. `GET /shuttle/subscriptions` accepts optional `q`, `routeId`, `status`, `page`, and `pageSize`, returns the same envelope, and searches the current tenant's member and route fields only.
+
+`POST /shuttle/subscriptions` rejects an `endDate` before `startDate`, a foreign or inactive route, and an ineligible current cooperative member. The permitted Shuttle subscriber identity policy remains an open business decision recorded in `SPRINT05_BUSINESS_DECISIONS.md`; this endpoint preserves the existing cooperative-member model until a reviewed migration changes it.
+
+`POST /shuttle/subscriptions/:id/cancel` is an operations-role correction endpoint. It requires a 5–500 character reason, derives the tenant from the session, changes only an active same-tenant subscription to `CANCELLED`, and writes one `cancel` AuditLog in the same serializable transaction. A repeated cancellation is a no-op `200` response and does not write another audit entry. Existing invoices are retained as history; new ad-hoc invoices and billing-period generation reject cancelled subscriptions.
+
+Existing Shuttle Route, Subscription, Invoice, and Payment writes now include their AuditLog record in the same serializable transaction. Payment recording retries PostgreSQL serialization conflicts and rejects an overpayment without committing either the payment or its audit record. This is a data-integrity guarantee, not an approval of billing-period, proration, share, settlement, or refund policy.
+
 A checkout idempotency key belongs to the separate `POST /sales` contract. A sale void is not a payment refund.
+
+## Shuttle billing and payment contract
+
+`POST/GET /shuttle/billing-periods` creates or lists a tenant-scoped monthly period. `POST /shuttle/billing-periods/:id/generate` creates missing invoice drafts idempotently, while `POST /shuttle/billing-periods/:id/finalize` publishes draft invoices and finalizes the period. The browser must treat `409 BILLING_PERIOD_FINALIZED` as a refresh-required state, not a successful submission.
+
+**Provisional Shuttle money boundary:** route rate, ad-hoc Shuttle invoice amount, and Shuttle payment amount must be positive whole Rupiah within the documented API range. Fractional Rupiah, non-finite values, zero/negative payment amounts, and out-of-range values are rejected with `400 VALIDATION_ERROR`; they are never rounded or truncated. Server-side payment balance, invoice status, settlement split, and Shuttle-report aggregation use exact integer arithmetic before returning ordinary JSON numbers for valid in-range values. This is a Capstone technical policy pending finance/PIC confirmation for operational data.
+
+`GET /billing/invoices` returns invoice payment history for its permitted roles. The client derives an informational outstanding amount from **VERIFIED** payments only; the server remains authoritative for payment acceptance, invoice status, and overpayment decisions. `POST /billing/payments/:id/verify` and `POST /billing/payments/:id/reverse` are finance-role actions. A reversal after allocation returns `409 PAYMENT_ALLOCATED_TO_SETTLEMENT` without changing the payment.
+
+**Provisional Cashier collection contract:** `GET /shuttle/billing/collectible-invoices` is a tenant-scoped, read-only selection endpoint for payment-recording roles. It accepts bounded `q`, `page`, and `pageSize` parameters and returns only invoice ID/reference, minimal rider/route/billing-period context, whole-Rupiah invoice amount, currently collectible amount, status, and due date. It does not return Payment history, settlement metadata, vendor/cooperative shares, or finance-management fields. A collectible invoice is `ISSUED`, not `VOID`, and has a positive balance after both `RECORDED` and `VERIFIED` payments. This least-privilege Cashier access remains subject to PIC/business approval.
+
+`POST /billing/invoices/:id/void` is a finance-role correction endpoint. It requires a reason and is tenant-scoped, serializable, and audit-backed. It returns `409 INVOICE_HAS_PAYMENTS` for any invoice with a Payment and `409 INVOICE_SETTLED` when a related Payment is allocated to ShuttleSettlement. A repeated void is a no-op `200` response with no additional audit record. `GET /shuttle/report` excludes `VOID` invoices and their payments from billed, paid, and outstanding amounts.
+
+`PUT/GET /shuttle/financial-config`, `POST /shuttle/billing-periods/:id/settlements`, `GET /shuttle/settlements`, `POST /shuttle/settlements/:id/approve`, and `POST /shuttle/settlements/:id/mark-paid` are finance-controlled. Share amounts are calculated and snapshotted by the server; a browser never submits calculated vendor/cooperative amounts. Settlement responses consistently expose `verifiedAmount`, `vendorAmount`, and `cooperativeAmount` as safe, whole-Rupiah JSON numbers; database `Decimal` values are never used for browser-side arithmetic.
+
+Payment proof uses `POST /attachments` with multipart fields `entityType=Payment`, `entityId`, and `file`; only PDF/JPEG/PNG/WEBP with matching content signature, MIME type, and extension up to 5 MiB are accepted. The response deliberately excludes `storageKey`, hash, filesystem path, and public URL. A proof download is only available through authenticated `GET /attachments/:id/download`; no endpoint currently lists historical Payment attachments, so the current UI only displays a proof uploaded in its active session.
+
+There is currently no API to edit a Shuttle route, change a subscription lifecycle state, model a Guardian relation, retrieve one invoice by ID, or list Payment attachments. The web client must not imitate these capabilities locally.
 
 ## Store SKU contract
 
 `POST /products` and `PATCH /products/:id` accept only 2–50 character ASCII SKU values matching `[A-Za-z0-9][A-Za-z0-9._/-]{1,49}` and return/store their uppercase canonical form. The tenant-scoped Product uniqueness boundary is also enforced by PostgreSQL; clients must not depend on preservation of SKU letter case.
+
+## CP6 activity-category suggestion contract
+
+The private FastAPI service exposes `POST /v1/activity-category/predict` for F4. It accepts only `{ "note_deidentified": string }` after de-identification and returns an enum `predicted_category` (`INVENTORY`, `SALES`, `SERVICE`, or `ADMINISTRATION`), either `confidence` **or** `decision_score`, `model_version`, `label_version`, and `inference_status: "ok"`. A decision score is not a probability. FastAPI loads only `NOVO_ACTIVITY_MODEL_DIR` (default `./models/activity_category_v02_final`) and its configured `NOVO_ACTIVITY_MODEL_VERSION` (default `activity-category-v0.2-39098d6f4f26`); it rejects an absent, mismatched, or non-final artifact without retraining or falling back to an earlier artifact. `NOVO_ML_SERVING_MODE=activity_only` is the no-retraining F4 mode: it skips legacy intent/demand loading and reports those capabilities unavailable rather than synthesizing a fallback.
+
+Browsers must call `POST /api/v1/analytics/activity-classification`, never FastAPI directly. The cookie-authenticated Express route requires the existing CSRF and trusted-Origin controls plus `OWNER`, `ADMIN`, or `ANALYST` server permission (including the documented delegated roles). It accepts the strict request `{ "noteDeidentified": string }` with 3–500 meaningful characters; `tenantId` and unknown fields are rejected. Tenant scope is derived only from the server session.
+
+The public response is `{ predictedCategory, modelVersion, labelVersion, inferenceStatus: "SUCCESS", confidence? | decisionScore? }`. `503 ML_SERVICE_UNAVAILABLE`, `504 ML_SERVICE_TIMEOUT`, and `502 ML_SERVICE_INVALID_RESPONSE` are fail-closed outcomes: clients must offer a manual draft choice rather than fabricate a prediction. The audit record includes only the selected label/version/status, never the raw note. This checkpoint neither persists an activity nor changes an invoice, settlement, stock movement, or any other business record; accepting/correcting a category remains browser-only draft state.
+
+The model was final-evaluated once on a small synthetic hold-out. Its score does not establish operational accuracy or production readiness. Dataset privacy, grouped split, final-evaluation gate, and reproducibility requirements are in `docs/ACTIVITY_DATASET_CONTRACT.md`.
 
 ## Model-service contract
 

@@ -1,4 +1,4 @@
-import { Bot, Bus, Landmark, LayoutDashboard, UsersRound, LogOut, Menu, ShoppingBasket, Store, Utensils, WalletCards, X } from "lucide-react";
+import { Bot, Bus, Landmark, LayoutDashboard, Tags, UsersRound, LogOut, Menu, ShoppingBasket, Store, Utensils, WalletCards, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
@@ -6,6 +6,7 @@ import { api, clearActiveSession, setActiveSession, type Session } from "./api";
 import { AccessPage } from "./auth";
 import { requestServerLogout } from "./logout";
 import { AssistantPage, CateringPage, DashboardPage, FinancingPage, FundingPage, MasterDataPage, PosPage, PurchasingPage, ShuttlePage } from "./pages";
+import { ActivityClassificationPage } from "./activity-classification-page";
 import { discardProtectedQueries } from "./session-cache";
 
 const navigation = [
@@ -18,6 +19,7 @@ const navigation = [
   ["/financing", "Pembiayaan", WalletCards],
   ["/purchasing", "Purchasing", ShoppingBasket],
   ["/assistant", "Asisten", Bot],
+  ["/activity-classification", "Kategori Aktivitas", Tags],
 ] as const;
 
 function Shell({ session, onSignOut, logoutError, signingOut }: { session: Session; onSignOut: () => Promise<void>; logoutError: string; signingOut: boolean }) {
@@ -41,6 +43,7 @@ function Shell({ session, onSignOut, logoutError, signingOut }: { session: Sessi
       <Route path="/financing" element={<FinancingPage session={session} />} />
       <Route path="/purchasing" element={<PurchasingPage session={session} />} />
       <Route path="/assistant" element={<AssistantPage session={session} />} />
+      <Route path="/activity-classification" element={<ActivityClassificationPage session={session} />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes></main>
   </div>;
