@@ -18,7 +18,9 @@ import { asNumber, asyncRoute, HttpError, makeReference } from "./lib.js";
 import { storeSkuInput } from "./store-sku.js";
 import { fingerprintInventoryMutation, inventoryIdempotencyKeySchema } from "./store-inventory-idempotency.js";
 import { withSerializableTransactionRetry, withStoreTransactionRetry } from "./store-transaction.js";
+import { inclusiveActiveDays, jakartaMonth, jakartaPeriodDays, jakartaPeriodLabel, proratedRupiah, shuttleRupiahBigInt, shuttleRupiahNumber, sumShuttleRupiah } from "./shuttle-billing.js";
 import { isActiveShuttleSubscriptionUniqueConflict } from "./shuttle-subscription-unique.js";
+import { isPaymentReferenceUniqueConflict } from "./shuttle-payment-reference-unique.js";
 import { MAX_IMPORT_FILE_BYTES, IMPORT_PREVIEW_TTL_MS, MASTER_DATA_TEMPLATE_FILENAME, classifyImportPreview, createMasterDataTemplate, fingerprintImportPreview, importPreviewPayloadSchema, normalizeIdentifier, parseMasterDataWorkbook, type ExistingMasterDataRecord } from "./master-data-import.js";
 import type { AuthContext, AuthenticatedRequest } from "./types.js";
 import { date, id, memberInput, money, paymentMethod } from "./validation.js";
@@ -61,6 +63,48 @@ const decimalJson = <T>(value: T): T => JSON.parse(JSON.stringify(value, (_key, 
   typeof item === "object" && item !== null && "toNumber" in item ? (item as { toNumber(): number }).toNumber() : item,
 )) as T;
 const auditSnapshot = (value: unknown): Prisma.InputJsonValue => decimalJson(value) as Prisma.InputJsonValue;
+
+/**
+ * Shuttle money is persisted as Decimal for database precision, but its public
+ * API contract is a whole-Rupiah JSON number. Do this only at the response
+ * boundary, after all settlement arithmetic and persistence have completed.
+ */
+const shuttleSettlementJson = <T extends {
+  verifiedAmount: { toString(): string };
+  vendorAmount: { toString(): string };
+  cooperativeAmount: { toString(): string };
+}>(settlement: T) => ({
+  ...decimalJson(settlement),
+  verifiedAmount: shuttleRupiahNumber(shuttleRupiahBigInt(settlement.verifiedAmount, "INVALID_SETTLEMENT_AMOUNT"), "INVALID_SETTLEMENT_AMOUNT"),
+  vendorAmount: shuttleRupiahNumber(shuttleRupiahBigInt(settlement.vendorAmount, "INVALID_SETTLEMENT_AMOUNT"), "INVALID_SETTLEMENT_AMOUNT"),
+  cooperativeAmount: shuttleRupiahNumber(shuttleRupiahBigInt(settlement.cooperativeAmount, "INVALID_SETTLEMENT_AMOUNT"), "INVALID_SETTLEMENT_AMOUNT"),
+});
+
+const shuttleCollectibleInvoiceQuery = z.object({
+  q: z.string().trim().max(120).optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(50).default(25),
+}).strict();
+
+const activityCategory = z.enum(["INVENTORY", "SALES", "SERVICE", "ADMINISTRATION"]);
+const activityClassificationInput = z.object({
+  noteDeidentified: z.string().trim().min(3).max(500),
+}).strict();
+const activityClassificationProviderResponse = z.object({
+  predicted_category: activityCategory,
+  confidence: z.number().finite().min(0).max(1).nullable(),
+  decision_score: z.number().finite().nullable(),
+  model_version: z.string().trim().min(1).max(160),
+  label_version: z.string().trim().min(1).max(160),
+  inference_status: z.literal("ok"),
+}).strict().superRefine((value, context) => {
+  if ((value.confidence === null) === (value.decision_score === null)) {
+    context.addIssue({ code: "custom", message: "Provider must return exactly one score type." });
+  }
+});
+const activityClassificationRoles: UserRole[] = ["OWNER", "ADMIN", "ANALYST"];
+
+const sqlLikeLiteral = (value: string) => value.replace(/[!%_]/g, "!$&");
 
 app.disable("x-powered-by");
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
@@ -723,6 +767,7 @@ async function serializableStore<T>(operation: (tx: Prisma.TransactionClient) =>
     }),
   );
 }
+
 async function serializableShuttle<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
   return withSerializableTransactionRetry(
     () => prisma.$transaction(operation, {
@@ -813,7 +858,10 @@ const shuttleSubscriptionListQuery = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
 }).strict();
 const shuttleOpsRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "ADMIN_STAFF", "FLEET_MANAGER"];
-const shuttleFinanceRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "TREASURER"];
+// D05-05 remains provisional, but the server keeps the current least-privilege
+// boundary explicit: cashiers can only record/choose collectible invoices;
+// finance officers verify and read Shuttle finance; treasurers approve payouts.
+const shuttleFinanceRoles: UserRole[] = ["OWNER", "ADMIN", "SUPER_ADMIN", "FINANCE_OFFICER", "TREASURER"];
 const shuttleSubscriptionResponseSelect = {
   id: true,
   routeId: true,
@@ -823,38 +871,38 @@ const shuttleSubscriptionResponseSelect = {
   startDate: true,
   endDate: true,
   effectiveMonthlyRate: true,
+  route: { select: { id: true, code: true, name: true, active: true, monthlyRate: true } },
   member: { select: { id: true, memberNo: true, name: true } },
   studentIdentity: { select: { id: true, identifier: true, fullName: true } },
-  route: { select: { id: true, code: true, name: true, active: true, monthlyRate: true } },
 } satisfies Prisma.ShuttleSubscriptionSelect;
-type ShuttleSubscriptionResponseRecord = Prisma.ShuttleSubscriptionGetPayload<{
-  select: typeof shuttleSubscriptionResponseSelect;
-}>;
-function shuttleRupiahResponseValue(
-  value: Prisma.Decimal | null,
-  field: "effectiveMonthlyRate" | "route.monthlyRate",
-): number | null {
+type ShuttleSubscriptionResponseRecord = Prisma.ShuttleSubscriptionGetPayload<{ select: typeof shuttleSubscriptionResponseSelect }>;
+
+/** Deliberately exclude tenant IDs, contact details, full student records, and invoices. */
+function shuttleRupiahResponseValue(value: { toString(): string }, field: "effectiveMonthlyRate" | "route.monthlyRate"): number;
+function shuttleRupiahResponseValue(value: { toString(): string } | null, field: "effectiveMonthlyRate" | "route.monthlyRate"): number | null;
+function shuttleRupiahResponseValue(value: { toString(): string } | null, field: "effectiveMonthlyRate" | "route.monthlyRate"): number | null {
   if (value === null) return null;
-  if (
-    !value.isInteger() ||
-    value.lessThan(1) ||
-    value.greaterThan(999_999_999) ||
-    !Number.isSafeInteger(value.toNumber())
-  ) {
-    throw new HttpError(500, "INVALID_SHUTTLE_RATE", `Stored ${field} is outside the approved whole-Rupiah contract.`);
-  }
-  return value.toNumber();
+  const amount = shuttleRupiahBigInt(value, "INVALID_SHUTTLE_RATE");
+  if (amount < 1n) throw new HttpError(500, "INVALID_SHUTTLE_RATE", `Stored ${field} is outside the approved whole-Rupiah contract.`);
+  return shuttleRupiahNumber(amount, "INVALID_SHUTTLE_RATE");
 }
 
 function shuttleSubscriptionResponse(subscription: ShuttleSubscriptionResponseRecord) {
-  const { effectiveMonthlyRate, route, ...safeSubscription } = subscription;
   return {
-    ...safeSubscription,
-    effectiveMonthlyRate: shuttleRupiahResponseValue(effectiveMonthlyRate, "effectiveMonthlyRate"),
+    id: subscription.id,
+    routeId: subscription.routeId,
+    memberId: subscription.memberId,
+    studentIdentityId: subscription.studentIdentityId,
+    status: subscription.status,
+    startDate: subscription.startDate,
+    endDate: subscription.endDate,
+    effectiveMonthlyRate: shuttleRupiahResponseValue(subscription.effectiveMonthlyRate, "effectiveMonthlyRate"),
     route: {
-      ...route,
-      monthlyRate: shuttleRupiahResponseValue(route.monthlyRate, "route.monthlyRate"),
+      ...subscription.route,
+      monthlyRate: shuttleRupiahResponseValue(subscription.route.monthlyRate, "route.monthlyRate"),
     },
+    member: subscription.member,
+    studentIdentity: subscription.studentIdentity,
   };
 }
 
@@ -929,34 +977,327 @@ api.post("/shuttle/subscriptions", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER
   response.status(201).json(shuttleSubscriptionResponse(subscription));
 }));
 
-api.post("/shuttle/subscriptions/:id/invoices", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
+const shuttleCancellationInput = z.object({
+  reason: z.string().trim().min(5).max(500),
+}).strict();
+
+api.post("/shuttle/subscriptions/:id/cancel", requireRoles(...shuttleOpsRoles), asyncRoute(async (request, response) => {
   const subscriptionId = id.parse(request.params.id);
-  const input = z.object({ dueDate: date.optional(), amount: money.positive().optional() }).parse(request.body);
-  const subscription = await prisma.shuttleSubscription.findFirst({ where: { id: subscriptionId, tenantId: me(request).tenantId }, include: { route: true } });
-  if (!subscription) throw new HttpError(404, "NOT_FOUND", "Subscription not found.");
-  const invoice = await prisma.invoice.create({ data: { tenantId: me(request).tenantId, subscriptionId, invoiceNo: makeReference("INV"), description: `Shuttle subscription: ${subscription.route.name}`, amount: input.amount ?? asNumber(subscription.route.monthlyRate), dueDate: input.dueDate, status: "ISSUED", issuedAt: new Date() } });
-  await audit(me(request), "issue", "Invoice", invoice.id, invoice);
-  response.status(201).json(decimalJson(invoice));
+  const input = shuttleCancellationInput.parse(request.body);
+  const actor = me(request);
+  const result = await serializableShuttle(async (tx) => {
+    const current = await tx.shuttleSubscription.findFirst({ where: { id: subscriptionId, tenantId: actor.tenantId } });
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Subscription not found.");
+    if (current.status === "CANCELLED") {
+      return { subscription: await tx.shuttleSubscription.findUniqueOrThrow({ where: { id: current.id }, select: shuttleSubscriptionResponseSelect }), changed: false };
+    }
+
+    const changed = await tx.shuttleSubscription.updateMany({
+      where: { id: current.id, tenantId: actor.tenantId, status: { not: "CANCELLED" } },
+      data: { status: "CANCELLED" },
+    });
+    if (changed.count !== 1) throw new HttpError(409, "SUBSCRIPTION_CANCELLATION_CONFLICT", "Subscription cancellation could not be completed.");
+
+    const cancelled = await tx.shuttleSubscription.findUniqueOrThrow({ where: { id: current.id }, select: shuttleSubscriptionResponseSelect });
+    await tx.auditLog.create({
+      data: {
+        tenantId: actor.tenantId,
+        actorId: actor.id,
+        action: "cancel",
+        entityType: "ShuttleSubscription",
+        entityId: cancelled.id,
+        before: auditSnapshot(current),
+        after: { subscriptionId: cancelled.id, status: cancelled.status, reason: input.reason },
+      },
+    });
+    return { subscription: cancelled, changed: true };
+  });
+  response.json(shuttleSubscriptionResponse(result.subscription));
+}));
+
+api.post("/shuttle/subscriptions/:id/invoices", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
+  id.parse(request.params.id);
+  throw new HttpError(409, "LEGACY_SHUTTLE_INVOICE_ENDPOINT_RETIRED", "Create and finalize a Shuttle billing period before collecting a Shuttle invoice.");
 }));
 
 api.get("/billing/invoices", requireRoles("OWNER", "ADMIN", "FLEET_MANAGER", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
-  response.json({ data: decimalJson(await prisma.invoice.findMany({ where: { tenantId: me(request).tenantId }, include: { payments: true, subscription: { include: { member: true, route: true } } }, orderBy: { issuedAt: "desc" }, take: 100 })) });
+  const invoices = await prisma.invoice.findMany({
+    where: { tenantId: me(request).tenantId },
+    select: {
+      id: true, invoiceNo: true, description: true, amount: true, status: true,
+      dueDate: true, issuedAt: true, finalizedAt: true, routeCodeSnapshot: true,
+      routeNameSnapshot: true, proratedDays: true, periodDays: true,
+      payments: {
+        select: {
+          id: true, amount: true, method: true, reference: true, status: true,
+          paidAt: true, verifiedAt: true, reversalReason: true,
+        },
+      },
+      subscription: {
+        select: {
+          route: { select: { id: true, code: true, name: true, stops: true, active: true, monthlyRate: true } },
+          member: { select: { id: true, memberNo: true, name: true } },
+          studentIdentity: { select: { id: true, identifier: true, fullName: true } },
+        },
+      },
+    },
+    orderBy: { issuedAt: "desc" },
+    take: 100,
+  });
+  response.json({ data: decimalJson(invoices) });
 }));
 
-api.post("/billing/invoices/:id/payments", requireRoles("OWNER", "ADMIN", "FINANCE_OFFICER"), asyncRoute(async (request, response) => {
-  const invoiceId = id.parse(request.params.id);
-  const input = z.object({ amount: money.positive(), method: paymentMethod, reference: z.string().trim().min(3).max(80) }).parse(request.body);
-  const payment = await prisma.$transaction(async (tx) => {
-    const invoice = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId: me(request).tenantId }, include: { payments: true } });
-    if (!invoice || invoice.status === "VOID") throw new HttpError(404, "NOT_FOUND", "Invoice not found.");
-    const paid = invoice.payments.reduce((sum, item) => sum + asNumber(item.amount), 0);
-    if (paid + input.amount > asNumber(invoice.amount)) throw new HttpError(409, "OVERPAYMENT", "Payment exceeds the remaining invoice amount.");
-    const created = await tx.payment.create({ data: { tenantId: me(request).tenantId, invoiceId, ...input } });
-    if (paid + input.amount === asNumber(invoice.amount)) await tx.invoice.update({ where: { id: invoice.id }, data: { status: "PAID" } });
-    return created;
+api.get("/shuttle/billing/collectible-invoices", requireRoles("OWNER", "ADMIN", "FINANCE_OFFICER", "CASHIER"), asyncRoute(async (request, response) => {
+  const query = shuttleCollectibleInvoiceQuery.parse(request.query);
+  const actor = me(request);
+  const searchClause = query.q
+    ? Prisma.sql`AND (i."invoiceNo" ILIKE ${`%${sqlLikeLiteral(query.q)}%`} ESCAPE '!' OR COALESCE(i."routeNameSnapshot", '') ILIKE ${`%${sqlLikeLiteral(query.q)}%`} ESCAPE '!')`
+    : Prisma.empty;
+  const committedPayments = Prisma.sql`
+    SELECT "invoiceId", SUM("amount") AS committed
+    FROM "Payment"
+    WHERE "tenantId" = ${actor.tenantId} AND "status" IN ('RECORDED', 'VERIFIED')
+    GROUP BY "invoiceId"
+  `;
+  const eligibleWhere = Prisma.sql`
+    FROM "Invoice" AS i
+    LEFT JOIN committed_payments AS cp ON cp."invoiceId" = i."id"
+    WHERE i."tenantId" = ${actor.tenantId}
+      AND i."shuttleBillingPeriodId" IS NOT NULL
+      AND i."status" = 'ISSUED'
+      AND EXISTS (
+        SELECT 1 FROM "ShuttleBillingPeriod" AS bp
+        WHERE bp."id" = i."shuttleBillingPeriodId"
+          AND bp."tenantId" = i."tenantId"
+          AND bp."status" = 'FINALIZED'
+      )
+      AND i."amount" > COALESCE(cp.committed, 0)
+      ${searchClause}
+  `;
+  const [countRows, idRows] = await Promise.all([
+    prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`WITH committed_payments AS (${committedPayments}) SELECT COUNT(*)::bigint AS total ${eligibleWhere}`),
+    prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`WITH committed_payments AS (${committedPayments}) SELECT i."id" ${eligibleWhere} ORDER BY i."dueDate" ASC NULLS LAST, i."invoiceNo" ASC LIMIT ${query.pageSize} OFFSET ${(query.page - 1) * query.pageSize}`),
+  ]);
+  const ids = idRows.map((row) => row.id);
+  const invoices = ids.length ? await prisma.invoice.findMany({
+    where: { tenantId: actor.tenantId, shuttleBillingPeriodId: { not: null }, id: { in: ids } },
+    select: {
+      id: true, invoiceNo: true, amount: true, status: true, dueDate: true, routeNameSnapshot: true,
+      shuttleBillingPeriod: { select: { startsAt: true, endsAt: true } },
+      subscription: { select: { payerName: true, member: { select: { name: true } }, studentIdentity: { select: { fullName: true } }, route: { select: { name: true } } } },
+      payments: { where: { status: { in: ["RECORDED", "VERIFIED"] } }, select: { amount: true } },
+    },
+  }) : [];
+  const invoicesById = new Map(invoices.map((invoice) => [invoice.id, invoice]));
+  const data = ids.flatMap((invoiceId) => {
+    const invoice = invoicesById.get(invoiceId);
+    if (!invoice) return [];
+    const amount = shuttleRupiahBigInt(invoice.amount);
+    const committed = sumShuttleRupiah(invoice.payments.map((payment) => payment.amount));
+    const collectibleAmount = amount - committed;
+    if (collectibleAmount <= 0n) return [];
+    return [{
+      id: invoice.id,
+      invoiceNo: invoice.invoiceNo,
+      riderName: invoice.subscription?.payerName ?? invoice.subscription?.studentIdentity?.fullName ?? invoice.subscription?.member?.name ?? null,
+      routeName: invoice.routeNameSnapshot ?? invoice.subscription?.route.name ?? null,
+      billingPeriod: invoice.shuttleBillingPeriod ? { startsAt: invoice.shuttleBillingPeriod.startsAt, endsAt: invoice.shuttleBillingPeriod.endsAt } : null,
+      amount: shuttleRupiahNumber(amount),
+      collectibleAmount: shuttleRupiahNumber(collectibleAmount),
+      status: invoice.status,
+      dueDate: invoice.dueDate,
+    }];
   });
-  await audit(me(request), "record_payment", "Payment", payment.id, payment);
-  response.status(201).json(decimalJson(payment));
+  response.json({ data, pagination: storePage(query.page, query.pageSize, Number(countRows[0]?.total ?? 0n)) });
+}));
+
+api.post("/billing/invoices/:id/void", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const invoiceId = id.parse(request.params.id);
+  const input = shuttleCancellationInput.parse(request.body);
+  const actor = me(request);
+  const result = await serializableShuttle(async (tx) => {
+    const current = await tx.invoice.findFirst({
+      where: { id: invoiceId, tenantId: actor.tenantId, shuttleBillingPeriodId: { not: null } },
+      include: { payments: { include: { shuttleSettlements: true } }, shuttleBillingPeriod: { select: { settlements: { select: { id: true } } } } },
+    });
+    if (!current) throw new HttpError(404, "NOT_FOUND", "Shuttle invoice not found.");
+    if (current.status === "VOID") return { invoice: current, changed: false };
+    if (current.payments.some((payment) => payment.shuttleSettlements.length > 0)) {
+      throw new HttpError(409, "INVOICE_SETTLED", "A settled invoice requires a settlement correction before it can be voided.");
+    }
+    if (current.payments.length > 0) {
+      throw new HttpError(409, "INVOICE_HAS_PAYMENTS", "Invoices with payments cannot be voided.");
+    }
+    if (current.shuttleBillingPeriod?.settlements.length) {
+      throw new HttpError(409, "BILLING_PERIOD_SETTLED", "A settled billing period requires a settlement correction before an invoice can change.");
+    }
+    if (current.status !== "ISSUED") throw new HttpError(409, "INVOICE_NOT_VOIDABLE", "Only an issued Shuttle invoice without payments can be voided.");
+    const changed = await tx.invoice.updateMany({
+      where: { id: current.id, tenantId: actor.tenantId, status: { not: "VOID" } },
+      data: { status: "VOID" },
+    });
+    if (changed.count !== 1) throw new HttpError(409, "INVOICE_VOID_CONFLICT", "Invoice void could not be completed.");
+    const voided = await tx.invoice.findUniqueOrThrow({ where: { id: current.id } });
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "void", entityType: "Invoice", entityId: voided.id, before: auditSnapshot(current), after: { invoiceId: voided.id, status: voided.status, reason: input.reason } } });
+    return { invoice: voided, changed: true };
+  });
+  response.json(decimalJson(result.invoice));
+}));
+
+api.post("/billing/invoices/:id/payments", requireRoles("OWNER", "ADMIN", "FINANCE_OFFICER", "CASHIER"), asyncRoute(async (request, response) => {
+  const invoiceId = id.parse(request.params.id);
+  const input = z.object({ amount: shuttleMoneyInput, method: paymentMethod, reference: z.string().trim().min(3).max(80) }).strict().parse(request.body);
+  const actor = me(request);
+  try {
+    const result = await serializableShuttle(async (tx) => {
+      const invoice = await tx.invoice.findFirst({ where: { id: invoiceId, tenantId: actor.tenantId, shuttleBillingPeriodId: { not: null } }, include: { payments: true, shuttleBillingPeriod: { select: { status: true, settlements: { select: { id: true } } } } } });
+      if (!invoice) throw new HttpError(404, "NOT_FOUND", "Shuttle invoice not found.");
+      const existing = await tx.payment.findFirst({ where: { tenantId: actor.tenantId, reference: input.reference } });
+      if (existing) {
+        const samePayload = existing.invoiceId === invoice.id && existing.method === input.method && shuttleRupiahBigInt(existing.amount) === BigInt(input.amount);
+        if (!samePayload || existing.status === null || existing.status === "REVERSED") throw new HttpError(409, "PAYMENT_REFERENCE_REUSED", "This payment reference cannot be replayed for a Shuttle payment.");
+        return { payment: existing, replayed: true };
+      }
+      if (invoice.shuttleBillingPeriod?.settlements.length) throw new HttpError(409, "BILLING_PERIOD_SETTLED", "A settled billing period cannot accept new payments.");
+      if (invoice.status !== "ISSUED" || invoice.shuttleBillingPeriod?.status !== "FINALIZED") throw new HttpError(409, "INVOICE_NOT_COLLECTIBLE", "Only issued invoices in a finalized Shuttle billing period can receive payments.");
+      const committed = sumShuttleRupiah(invoice.payments.filter((item) => item.status === "RECORDED" || item.status === "VERIFIED").map((item) => item.amount));
+      const verifiedAmount = sumShuttleRupiah(invoice.payments.filter((item) => item.status === "VERIFIED").map((item) => item.amount));
+      const invoiceAmount = shuttleRupiahBigInt(invoice.amount);
+      const requested = BigInt(input.amount);
+      if (committed + requested > invoiceAmount) throw new HttpError(409, "OVERPAYMENT", "Payment exceeds the remaining invoice amount.");
+      const verified = actor.role !== "CASHIER";
+      const created = await tx.payment.create({ data: { tenantId: actor.tenantId, invoiceId, ...input, status: verified ? "VERIFIED" : "RECORDED", verifiedAt: verified ? new Date() : null, verifiedById: verified ? actor.id : null } });
+      if (verified && verifiedAmount + requested === invoiceAmount) await tx.invoice.update({ where: { id: invoice.id }, data: { status: "PAID" } });
+      await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "record_payment", entityType: "Payment", entityId: created.id, after: auditSnapshot(created) } });
+      return { payment: created, replayed: false };
+    });
+    response.status(result.replayed ? 200 : 201).json(decimalJson({ ...result.payment, idempotentReplay: result.replayed }));
+  } catch (error) {
+    if (!isPaymentReferenceUniqueConflict(error)) throw error;
+    const [invoice, existing] = await Promise.all([
+      prisma.invoice.findFirst({ where: { id: invoiceId, tenantId: actor.tenantId, shuttleBillingPeriodId: { not: null } } }),
+      prisma.payment.findFirst({ where: { tenantId: actor.tenantId, reference: input.reference } }),
+    ]);
+    if (!invoice || !existing) throw error;
+    if (existing.invoiceId !== invoice.id || shuttleRupiahBigInt(existing.amount) !== BigInt(input.amount) || existing.method !== input.method || existing.status === null || existing.status === "REVERSED") {
+      throw new HttpError(409, "PAYMENT_REFERENCE_REUSED", "This payment reference belongs to a different payment.");
+    }
+    response.status(200).json(decimalJson({ ...existing, idempotentReplay: true }));
+  }
+}));
+
+async function updateShuttleInvoiceStatus(tx: Prisma.TransactionClient, invoiceId: string): Promise<void> {
+  const invoice = await tx.invoice.findFirst({ where: { id: invoiceId, shuttleBillingPeriodId: { not: null } }, include: { payments: true } });
+  if (!invoice) throw new HttpError(404, "NOT_FOUND", "Shuttle invoice not found.");
+  const verified = sumShuttleRupiah(invoice.payments.filter((payment) => payment.status === "VERIFIED").map((payment) => payment.amount));
+  const invoiceAmount = shuttleRupiahBigInt(invoice.amount);
+  await tx.invoice.update({ where: { id: invoice.id }, data: { status: verified >= invoiceAmount ? "PAID" : "ISSUED" } });
+}
+api.post("/billing/payments/:id/verify", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const paymentId = id.parse(request.params.id); const actor = me(request);
+  const payment = await serializableShuttle(async (tx) => { const current = await tx.payment.findFirst({ where: { id: paymentId, tenantId: actor.tenantId }, include: { invoice: { include: { shuttleBillingPeriod: { select: { status: true, settlements: { select: { id: true } } } } } } } }); if (!current || current.status === null || current.invoice.shuttleBillingPeriodId === null) throw new HttpError(404, "NOT_FOUND", "Shuttle payment not found."); if (current.status === "REVERSED") throw new HttpError(409, "PAYMENT_REVERSED", "A reversed payment cannot be verified."); if (current.status === "VERIFIED") return current; if (current.invoice.shuttleBillingPeriod?.settlements.length) throw new HttpError(409, "BILLING_PERIOD_SETTLED", "A settled billing period cannot verify additional payments."); if (current.invoice.status !== "ISSUED" || current.invoice.shuttleBillingPeriod?.status !== "FINALIZED") throw new HttpError(409, "INVOICE_NOT_COLLECTIBLE", "The Shuttle invoice is not collectible."); const verified = await tx.payment.update({ where: { id: current.id }, data: { status: "VERIFIED", verifiedAt: new Date(), verifiedById: actor.id } }); await updateShuttleInvoiceStatus(tx, current.invoiceId); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "verify", entityType: "Payment", entityId: current.id, after: auditSnapshot(verified) } }); return verified; }); response.json(decimalJson(payment));
+}));
+api.post("/billing/payments/:id/reverse", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const paymentId = id.parse(request.params.id); const input = z.object({ reason: z.string().trim().min(5).max(500) }).strict().parse(request.body); const actor = me(request);
+  const payment = await serializableShuttle(async (tx) => { const current = await tx.payment.findFirst({ where: { id: paymentId, tenantId: actor.tenantId }, include: { shuttleSettlements: true, invoice: { include: { shuttleBillingPeriod: { select: { settlements: { select: { id: true } } } } } } } }); if (!current || current.status === null || current.invoice.shuttleBillingPeriodId === null) throw new HttpError(404, "NOT_FOUND", "Shuttle payment not found."); if (current.status === "REVERSED") throw new HttpError(409, "PAYMENT_ALREADY_REVERSED", "Payment was already reversed."); if (current.shuttleSettlements.length || current.invoice.shuttleBillingPeriod?.settlements.length) throw new HttpError(409, "PAYMENT_ALLOCATED_TO_SETTLEMENT", "Reverse requires a settlement correction before a settled payment can change."); const reversed = await tx.payment.update({ where: { id: current.id }, data: { status: "REVERSED", reversedAt: new Date(), reversedById: actor.id, reversalReason: input.reason } }); await updateShuttleInvoiceStatus(tx, current.invoiceId); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "reverse", entityType: "Payment", entityId: current.id, after: auditSnapshot(reversed) } }); return reversed; }); response.json(decimalJson(payment));
+}));
+
+const shuttleMoneyInput = z.coerce.number().finite().int().min(1).max(999_999_999);
+const shuttlePeriodInput = z.object({ year: z.coerce.number().int().min(2020).max(2100), month: z.coerce.number().int().min(1).max(12) }).strict();
+const shuttleConfigInput = z.object({ vendorName: z.string().trim().min(2).max(160), vendorShareBps: z.coerce.number().int().min(0).max(10_000), cooperativeShareBps: z.coerce.number().int().min(0).max(10_000) }).strict().refine((input) => input.vendorShareBps + input.cooperativeShareBps === 10_000, "Vendor and cooperative shares must total 100%." );
+
+api.get("/shuttle/financial-config", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  response.json({ data: await prisma.shuttleFinancialConfig.findUnique({ where: { tenantId: me(request).tenantId } }) });
+}));
+api.put("/shuttle/financial-config", requireRoles("OWNER", "ADMIN", "SUPER_ADMIN"), asyncRoute(async (request, response) => {
+  const input = shuttleConfigInput.parse(request.body); const actor = me(request);
+  const config = await serializableShuttle(async (tx) => { const saved = await tx.shuttleFinancialConfig.upsert({ where: { tenantId: actor.tenantId }, create: { ...input, tenantId: actor.tenantId }, update: input }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "configure", entityType: "ShuttleFinancialConfig", entityId: saved.id, after: auditSnapshot(saved) } }); return saved; });
+  response.json(config);
+}));
+api.post("/shuttle/billing-periods", requireRoles(...shuttleOpsRoles), asyncRoute(async (request, response) => {
+  const { year, month } = shuttlePeriodInput.parse(request.body); const actor = me(request); const bounds = jakartaMonth(year, month);
+  const period = await serializableShuttle(async (tx) => { const existing = await tx.shuttleBillingPeriod.findUnique({ where: { tenantId_startsAt: { tenantId: actor.tenantId, startsAt: bounds.startsAt } } }); if (existing) return existing; const created = await tx.shuttleBillingPeriod.create({ data: { tenantId: actor.tenantId, startsAt: bounds.startsAt, endsAt: bounds.endsAt } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "ShuttleBillingPeriod", entityId: created.id, after: auditSnapshot(created) } }); return created; });
+  response.status(201).json(period);
+}));
+api.get("/shuttle/billing-periods", requireRoles(...shuttleOpsRoles), asyncRoute(async (request, response) => {
+  response.json({ data: await prisma.shuttleBillingPeriod.findMany({ where: { tenantId: me(request).tenantId }, orderBy: { startsAt: "desc" }, take: 100 }) });
+}));
+api.post("/shuttle/billing-periods/:id/generate", requireRoles(...shuttleOpsRoles), asyncRoute(async (request, response) => {
+  const periodId = id.parse(request.params.id); const actor = me(request);
+  const result = await serializableShuttle(async (tx) => {
+    const period = await tx.shuttleBillingPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } });
+    if (!period) throw new HttpError(404, "NOT_FOUND", "Billing period not found.");
+    if (period.status !== "OPEN") throw new HttpError(409, "BILLING_PERIOD_FINALIZED", "Finalized billing periods cannot generate invoices.");
+    const periodDays = jakartaPeriodDays(period.startsAt, period.endsAt);
+    const subscriptions = await tx.shuttleSubscription.findMany({ where: { tenantId: actor.tenantId, status: "ACTIVE", startDate: { lt: period.endsAt }, OR: [{ endDate: null }, { endDate: { gte: period.startsAt } }] }, include: { route: true } });
+    let created = 0;
+    for (const subscription of subscriptions) {
+      const existing = await tx.invoice.findFirst({ where: { tenantId: actor.tenantId, subscriptionId: subscription.id, shuttleBillingPeriodId: period.id } });
+      if (existing) continue;
+      const activeDays = inclusiveActiveDays(subscription, period.startsAt, period.endsAt);
+      if (!activeDays) continue;
+      const rate = shuttleRupiahNumber(shuttleRupiahBigInt(subscription.effectiveMonthlyRate ?? subscription.route.monthlyRate));
+      const amount = proratedRupiah(rate, activeDays, periodDays);
+      if (amount < 1) throw new HttpError(409, "PRORATED_AMOUNT_BELOW_ONE_RUPIAH", "Proration produced less than one Rupiah; correct the rate or billing dates before generation.");
+      await tx.invoice.create({ data: { tenantId: actor.tenantId, subscriptionId: subscription.id, shuttleBillingPeriodId: period.id, invoiceNo: makeReference("SHI"), description: `Shuttle ${subscription.route.name} ${jakartaPeriodLabel(period.startsAt)}`, amount, status: "DRAFT", routeCodeSnapshot: subscription.route.code, routeNameSnapshot: subscription.route.name, rateSnapshot: rate, proratedDays: activeDays, periodDays } });
+      created += 1;
+    }
+    await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "generate", entityType: "ShuttleBillingPeriod", entityId: period.id, after: { created } });
+    return { created };
+  });
+  response.json(result);
+}));
+api.post("/shuttle/billing-periods/:id/finalize", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const periodId = id.parse(request.params.id); const actor = me(request);
+  const period = await serializableShuttle(async (tx) => { const current = await tx.shuttleBillingPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } }); if (!current) throw new HttpError(404, "NOT_FOUND", "Billing period not found."); if (current.status === "FINALIZED") return current; const issuedAt = new Date(); await tx.invoice.updateMany({ where: { tenantId: actor.tenantId, shuttleBillingPeriodId: current.id, status: "DRAFT" }, data: { status: "ISSUED", issuedAt, finalizedAt: issuedAt, finalizedById: actor.id } }); const finalized = await tx.shuttleBillingPeriod.update({ where: { id: current.id }, data: { status: "FINALIZED", finalizedAt: issuedAt, finalizedById: actor.id } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "finalize", entityType: "ShuttleBillingPeriod", entityId: current.id, after: auditSnapshot(finalized) } }); return finalized; }); response.json(period);
+}));
+api.post("/shuttle/billing-periods/:id/settlements", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const periodId = id.parse(request.params.id); const actor = me(request);
+  try {
+    const settlement = await serializableShuttle(async (tx) => {
+      const [period, config] = await Promise.all([tx.shuttleBillingPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } }), tx.shuttleFinancialConfig.findUnique({ where: { tenantId: actor.tenantId } })]);
+      if (!period || period.status !== "FINALIZED") throw new HttpError(409, "BILLING_PERIOD_NOT_FINALIZED", "Finalize the billing period before settlement.");
+      if (!config?.active) throw new HttpError(400, "SHUTTLE_CONFIG_REQUIRED", "An active 100% share configuration is required.");
+      const existing = await tx.shuttleSettlement.findUnique({ where: { tenantId_billingPeriodId: { tenantId: actor.tenantId, billingPeriodId: period.id } } });
+      if (existing) return { settlement: existing, replayed: true };
+      const payments = await tx.payment.findMany({ where: { tenantId: actor.tenantId, status: "VERIFIED", invoice: { shuttleBillingPeriodId: period.id } } });
+      const verifiedAmount = sumShuttleRupiah(payments.map((payment) => payment.amount), "INVALID_SETTLEMENT_AMOUNT");
+      const vendorAmount = verifiedAmount * BigInt(config.vendorShareBps) / 10_000n;
+      const cooperativeAmount = verifiedAmount - vendorAmount;
+      const created = await tx.shuttleSettlement.create({ data: { tenantId: actor.tenantId, billingPeriodId: period.id, vendorNameSnapshot: config.vendorName, vendorShareBps: config.vendorShareBps, cooperativeShareBps: config.cooperativeShareBps, verifiedAmount: shuttleRupiahNumber(verifiedAmount, "INVALID_SETTLEMENT_AMOUNT"), vendorAmount: shuttleRupiahNumber(vendorAmount, "INVALID_SETTLEMENT_AMOUNT"), cooperativeAmount: shuttleRupiahNumber(cooperativeAmount, "INVALID_SETTLEMENT_AMOUNT"), payments: { create: payments.map((payment) => ({ paymentId: payment.id })) } } });
+      await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "create", entityType: "ShuttleSettlement", entityId: created.id, after: auditSnapshot(created) } });
+      return { settlement: created, replayed: false };
+    });
+    response.status(settlement.replayed ? 200 : 201).json({ ...shuttleSettlementJson(settlement.settlement), idempotentReplay: settlement.replayed });
+  } catch (error) {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+    const existing = await prisma.shuttleSettlement.findUnique({ where: { tenantId_billingPeriodId: { tenantId: actor.tenantId, billingPeriodId: periodId } } });
+    if (!existing) throw error;
+    response.status(200).json({ ...shuttleSettlementJson(existing), idempotentReplay: true });
+  }
+}));
+api.post("/shuttle/settlements/:id/approve", requireRoles("OWNER", "ADMIN", "SUPER_ADMIN", "CHAIRMAN", "TREASURER"), asyncRoute(async (request, response) => {
+  const settlementId = id.parse(request.params.id); const actor = me(request); const settlement = await serializableShuttle(async (tx) => { const changed = await tx.shuttleSettlement.updateMany({ where: { id: settlementId, tenantId: actor.tenantId, status: "DRAFT" }, data: { status: "APPROVED", approvedAt: new Date(), approvedById: actor.id } }); if (changed.count !== 1) throw new HttpError(409, "SETTLEMENT_NOT_DRAFT", "Settlement is unavailable for approval."); const updated = await tx.shuttleSettlement.findUniqueOrThrow({ where: { id: settlementId } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "approve", entityType: "ShuttleSettlement", entityId: updated.id, after: auditSnapshot(updated) } }); return updated; }); response.json(shuttleSettlementJson(settlement));
+}));
+api.get("/shuttle/settlements", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const settlements = await prisma.shuttleSettlement.findMany({ where: { tenantId: me(request).tenantId }, include: { billingPeriod: true }, orderBy: { billingPeriod: { startsAt: "desc" } }, take: 100 });
+  response.json({ data: settlements.map(shuttleSettlementJson) });
+}));
+api.post("/shuttle/settlements/:id/mark-paid", requireRoles("OWNER", "ADMIN", "SUPER_ADMIN", "TREASURER"), asyncRoute(async (request, response) => {
+  const settlementId = id.parse(request.params.id); const input = z.object({ reference: z.string().trim().min(3).max(120) }).strict().parse(request.body); const actor = me(request); const settlement = await serializableShuttle(async (tx) => { const changed = await tx.shuttleSettlement.updateMany({ where: { id: settlementId, tenantId: actor.tenantId, status: "APPROVED" }, data: { status: "PAID", paidAt: new Date(), paidById: actor.id, paymentReference: input.reference } }); if (changed.count !== 1) throw new HttpError(409, "SETTLEMENT_NOT_APPROVED", "Settlement is unavailable for payment marking."); const updated = await tx.shuttleSettlement.findUniqueOrThrow({ where: { id: settlementId } }); await tx.auditLog.create({ data: { tenantId: actor.tenantId, actorId: actor.id, action: "mark_paid", entityType: "ShuttleSettlement", entityId: updated.id, after: auditSnapshot(updated) } }); return updated; }); response.json(shuttleSettlementJson(settlement));
+}));
+api.get("/shuttle/report", requireRoles(...shuttleFinanceRoles), asyncRoute(async (request, response) => {
+  const tenantId = me(request).tenantId;
+  const [invoices, payments, settlements] = await Promise.all([
+    prisma.invoice.findMany({ where: { tenantId, shuttleBillingPeriodId: { not: null }, status: { not: "VOID" } } }),
+    prisma.payment.findMany({ where: { tenantId, status: "VERIFIED", invoice: { shuttleBillingPeriodId: { not: null }, status: { not: "VOID" } } } }),
+    prisma.shuttleSettlement.findMany({ where: { tenantId } }),
+  ]);
+  const billed = sumShuttleRupiah(invoices.map((invoice) => invoice.amount));
+  const paid = sumShuttleRupiah(payments.map((payment) => payment.amount));
+  const vendorShare = sumShuttleRupiah(settlements.map((settlement) => settlement.vendorAmount));
+  const cooperativeShare = sumShuttleRupiah(settlements.map((settlement) => settlement.cooperativeAmount));
+  response.json({ billed: shuttleRupiahNumber(billed), paid: shuttleRupiahNumber(paid), outstanding: shuttleRupiahNumber(billed - paid), vendorShare: shuttleRupiahNumber(vendorShare), cooperativeShare: shuttleRupiahNumber(cooperativeShare), settlements: settlements.map(shuttleSettlementJson) });
 }));
 
 api.get("/catering/orders", asyncRoute(async (request, response) => {
@@ -1048,6 +1389,49 @@ api.post("/analytics/demand-forecast", requireRoles("OWNER", "ADMIN", "FLEET_MAN
   if (!predictionResponse?.ok) throw new HttpError(503, "ML_SERVICE_UNAVAILABLE", "The demand model is temporarily unavailable. Please try again later.");
   response.json(await predictionResponse.json());
 }));
+
+api.post("/analytics/activity-classification", requireRoles(...activityClassificationRoles), asyncRoute(async (request, response) => {
+  const input = activityClassificationInput.parse(request.body);
+  let providerResponse: globalThis.Response;
+  try {
+    providerResponse = await fetch(`${env.ML_SERVICE_URL}/v1/activity-category/predict`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ note_deidentified: input.noteDeidentified }),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new HttpError(504, "ML_SERVICE_TIMEOUT", "The activity suggestion service timed out. Choose a category manually and try again later.");
+    }
+    throw new HttpError(503, "ML_SERVICE_UNAVAILABLE", "The activity suggestion service is temporarily unavailable. Choose a category manually and try again later.");
+  }
+  if (!providerResponse.ok) {
+    throw new HttpError(503, "ML_SERVICE_UNAVAILABLE", "The activity suggestion service is temporarily unavailable. Choose a category manually and try again later.");
+  }
+
+  const rawProviderBody: unknown = await providerResponse.json().catch(() => undefined);
+  const parsed = activityClassificationProviderResponse.safeParse(rawProviderBody);
+  if (!parsed.success) {
+    throw new HttpError(502, "ML_SERVICE_INVALID_RESPONSE", "The activity suggestion service returned an invalid response. Choose a category manually and try again later.");
+  }
+
+  const actor = me(request);
+  const result = parsed.data;
+  await audit(actor, "suggest_activity_category", "ActivityClassificationSuggestion", makeReference("ACTCLS"), {
+    predictedCategory: result.predicted_category,
+    modelVersion: result.model_version,
+    labelVersion: result.label_version,
+    inferenceStatus: "SUCCESS",
+  });
+  response.json({
+    predictedCategory: result.predicted_category,
+    ...(result.confidence === null ? { decisionScore: result.decision_score } : { confidence: result.confidence }),
+    modelVersion: result.model_version,
+    labelVersion: result.label_version,
+    inferenceStatus: "SUCCESS",
+  });
+}));
 api.get("/knowledge-documents", asyncRoute(async (request, response) => {
   response.json({ data: await prisma.knowledgeDocument.findMany({ where: { tenantId: me(request).tenantId }, orderBy: { updatedAt: "desc" } }) });
 }));
@@ -1084,24 +1468,39 @@ api.post("/assistant/chat", asyncRoute(async (request, response) => {
 
 api.post("/attachments", requireRoles(...writeRoles), upload.single("file"), asyncRoute(async (request, response) => {
   const user = me(request);
-  const input = z.object({ entityType: z.string().trim().min(2).max(80), entityId: z.string().trim().min(2).max(80) }).parse(request.body);
-  if (!request.file) throw new HttpError(400, "FILE_REQUIRED", "Attach a PDF, JPEG, PNG, or WEBP file up to 5 MB.");
-  const bytes = readFileSync(request.file.path);
-  const detectedType = bytes.subarray(0, 5).toString("ascii") === "%PDF-" ? "application/pdf"
-    : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? "image/jpeg"
-    : bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? "image/png"
-    : bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP" ? "image/webp"
-    : undefined;
-  if (!detectedType || detectedType !== request.file.mimetype) {
-    unlinkSync(request.file.path);
-    throw new HttpError(400, "INVALID_FILE_SIGNATURE", "The file content does not match an allowed PDF or image type.");
+  const file = request.file;
+  if (!file) throw new HttpError(400, "FILE_REQUIRED", "Attach a PDF, JPEG, PNG, or WEBP file up to 5 MB.");
+  let targetPath: string | undefined;
+  let retained = false;
+  try {
+    const input = z.object({ entityType: z.string().trim().min(2).max(80), entityId: z.string().trim().min(2).max(80) }).parse(request.body);
+    if (input.entityType === "Payment") {
+      const payment = await prisma.payment.findFirst({ where: { id: input.entityId, tenantId: user.tenantId } });
+      if (!payment) throw new HttpError(404, "NOT_FOUND", "Payment not found.");
+    }
+    const bytes = readFileSync(file.path);
+    const detectedType = bytes.subarray(0, 5).toString("ascii") === "%PDF-" ? "application/pdf"
+      : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? "image/jpeg"
+      : bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? "image/png"
+      : bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP" ? "image/webp"
+      : undefined;
+    const extension = path.extname(file.originalname).toLowerCase();
+    const allowedExtensions: Record<string, readonly string[]> = { "application/pdf": [".pdf"], "image/jpeg": [".jpg", ".jpeg"], "image/png": [".png"], "image/webp": [".webp"] };
+    if (!detectedType || detectedType !== file.mimetype || !allowedExtensions[detectedType]?.includes(extension)) throw new HttpError(400, "INVALID_FILE_SIGNATURE", "The file content does not match an allowed PDF or image type.");
+    const filename = path.basename(file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "attachment";
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const storageKey = `${sha256}-${file.filename}`;
+    targetPath = path.join(uploadDir, storageKey);
+    renameSync(file.path, targetPath);
+    const attachment = await prisma.$transaction(async (tx) => { const created = await tx.attachment.create({ data: { tenantId: user.tenantId, uploadedById: user.id, ...input, filename, contentType: file.mimetype, size: file.size, storageKey, sha256 } }); await tx.auditLog.create({ data: { tenantId: user.tenantId, actorId: user.id, action: "upload", entityType: "Attachment", entityId: created.id, after: { entityType: input.entityType, entityId: input.entityId, sha256 } } }); return created; });
+    retained = true;
+    response.status(201).json({ id: attachment.id, entityType: attachment.entityType, entityId: attachment.entityId, filename: attachment.filename, contentType: attachment.contentType, size: attachment.size, createdAt: attachment.createdAt });
+  } finally {
+    if (!retained) {
+      if (targetPath && existsSync(targetPath)) unlinkSync(targetPath);
+      if (existsSync(file.path)) unlinkSync(file.path);
+    }
   }
-  const filename = path.basename(request.file.originalname).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 180) || "attachment";
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
-  const storageKey = `${sha256}-${request.file.filename}`;
-  renameSync(request.file.path, path.join(uploadDir, storageKey));
-  const attachment = await prisma.attachment.create({ data: { tenantId: user.tenantId, uploadedById: user.id, ...input, filename, contentType: request.file.mimetype, size: request.file.size, storageKey, sha256 } });  await audit(user, "upload", "Attachment", attachment.id, { entityType: input.entityType, entityId: input.entityId });
-  response.status(201).json(attachment);
 }));
 
 
@@ -1109,6 +1508,7 @@ api.get("/attachments/:id/download", asyncRoute(async (request, response) => {
   const attachmentId = id.parse(request.params.id);
   const attachment = await prisma.attachment.findFirst({ where: { id: attachmentId, tenantId: me(request).tenantId } });
   if (!attachment) throw new HttpError(404, "NOT_FOUND", "Attachment not found.");
+  if (attachment.entityType === "Payment" && !["OWNER", "ADMIN", "SUPER_ADMIN", "TREASURER", "FINANCE_OFFICER", "CASHIER", "AUDITOR"].includes(me(request).role)) throw new HttpError(403, "FORBIDDEN", "Payment proof access is not permitted for this role.");
   const filePath = path.resolve(uploadDir, attachment.storageKey);
   if (!filePath.startsWith(`${uploadDir}${path.sep}`) || !existsSync(filePath)) throw new HttpError(404, "FILE_NOT_FOUND", "Attachment binary is unavailable.");
   response.type(attachment.contentType);

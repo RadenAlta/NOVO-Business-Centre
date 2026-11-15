@@ -54,6 +54,20 @@ enum InvoiceStatus {
   PAID
   VOID
 }
+enum ShuttleBillingPeriodStatus {
+  OPEN
+  FINALIZED
+}
+enum ShuttlePaymentStatus {
+  RECORDED
+  VERIFIED
+  REVERSED
+}
+enum ShuttleSettlementStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
 enum CateringStatus {
   DRAFT
   CONFIRMED
@@ -98,6 +112,9 @@ model Tenant {
   storePayments         StorePayment[]
   shuttleRoutes         ShuttleRoute[]
   shuttleSubscriptions  ShuttleSubscription[]
+  shuttleBillingPeriods ShuttleBillingPeriod[]
+  shuttleFinancialConfig ShuttleFinancialConfig?
+  shuttleSettlements ShuttleSettlement[]
   invoices              Invoice[]
   payments              Payment[]
   settlements           Settlement[]
@@ -381,25 +398,61 @@ model ShuttleSubscription {
   route     ShuttleRoute       @relation(fields: [routeId], references: [id])
   invoices  Invoice[]
   // PostgreSQL enforces exactly one rider and active-rider uniqueness in
-  // migration 202611040009; Prisma cannot represent these partial indexes/checks.
+  // migration 202611040009; Prisma cannot represent these checks/indexes.
   @@index([tenantId, status])
+}
+
+model ShuttleBillingPeriod {
+  id String @id @default(cuid())
+  tenantId String
+  startsAt DateTime
+  endsAt DateTime
+  timezone String @default("Asia/Jakarta")
+  status ShuttleBillingPeriodStatus @default(OPEN)
+  finalizedAt DateTime?
+  finalizedById String?
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+  settlements ShuttleSettlement[]
+  @@unique([tenantId, startsAt])
+  @@index([tenantId, status, startsAt])
+}
+
+model ShuttleFinancialConfig {
+  id String @id @default(cuid())
+  tenantId String @unique
+  vendorName String
+  vendorShareBps Int
+  cooperativeShareBps Int
+  active Boolean @default(true)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 }
 
 model Invoice {
   id             String              @id @default(cuid())
   tenantId       String
   subscriptionId String?
+  shuttleBillingPeriodId String?
   invoiceNo      String
   description    String
   amount         Decimal             @db.Decimal(14, 2)
   status         InvoiceStatus       @default(DRAFT)
   dueDate        DateTime?
   issuedAt       DateTime?
+  finalizedAt DateTime?
+  finalizedById String?
+  routeCodeSnapshot String?
+  routeNameSnapshot String?
+  rateSnapshot Decimal? @db.Decimal(14, 2)
+  proratedDays Int?
+  periodDays Int?
   tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   subscription   ShuttleSubscription? @relation(fields: [subscriptionId], references: [id])
+  shuttleBillingPeriod ShuttleBillingPeriod? @relation(fields: [shuttleBillingPeriodId], references: [id], onDelete: Restrict)
   payments       Payment[]
   @@unique([tenantId, invoiceNo])
   @@index([tenantId, status])
+  @@unique([tenantId, subscriptionId, shuttleBillingPeriodId])
 }
 
 model Payment {
@@ -409,13 +462,51 @@ model Payment {
   reference   String
   amount      Decimal       @db.Decimal(14, 2)
   method      PaymentMethod
+  /// Null indicates a non-Shuttle/generic payment.
+  status ShuttlePaymentStatus?
+  verifiedAt DateTime?
+  verifiedById String?
+  reversedAt DateTime?
+  reversedById String?
+  reversalReason String?
   paidAt      DateTime      @default(now())
   tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   invoice     Invoice       @relation(fields: [invoiceId], references: [id])
   settlements SettlementPayment[]
+  shuttleSettlements ShuttleSettlementPayment[]
   @@unique([tenantId, reference])
 }
 
+model ShuttleSettlement {
+  id String @id @default(cuid())
+  tenantId String
+  billingPeriodId String
+  vendorNameSnapshot String
+  vendorShareBps Int
+  cooperativeShareBps Int
+  verifiedAmount Decimal @db.Decimal(14, 2)
+  vendorAmount Decimal @db.Decimal(14, 2)
+  cooperativeAmount Decimal @db.Decimal(14, 2)
+  status ShuttleSettlementStatus @default(DRAFT)
+  approvedAt DateTime?
+  approvedById String?
+  paidAt DateTime?
+  paidById String?
+  paymentReference String?
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  billingPeriod ShuttleBillingPeriod @relation(fields: [billingPeriodId], references: [id], onDelete: Restrict)
+  payments ShuttleSettlementPayment[]
+  @@unique([tenantId, billingPeriodId])
+}
+
+model ShuttleSettlementPayment {
+  settlementId String
+  paymentId String
+  settlement ShuttleSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  @@id([settlementId, paymentId])
+  @@unique([paymentId])
+}
 
 model Settlement {
   id          String              @id @default(cuid())

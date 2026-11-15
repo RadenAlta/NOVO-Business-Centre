@@ -4,8 +4,11 @@ node_modules/
 .pnpm-cache/
 work/*.log
 work/*.err
+work/e2e-uploads/
 dist/
 coverage/
+playwright-report/
+test-results/
 .env
 .env.*
 !.env.example

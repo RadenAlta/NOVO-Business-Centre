@@ -1,0 +1,379 @@
+{
+  "task": "activity-category-suggestion",
+  "model_version": "activity-category-v0.1-88adeac23c75",
+  "label_version": "activity-category-v0.1",
+  "seed": 20261105,
+  "dataset_sha256": "88adeac23c75d9dca92f2fb9636051abeed2702eb37eda696531012a421ef388",
+  "dataset_provenance": [
+    "synthetic-generator-v1; seed=20261105; no-personal-data"
+  ],
+  "split_strategy": "template-family-grouped fixed split; validation selects model; held-out test is reported after refit",
+  "class_distribution": {
+    "TRAIN": {
+      "ADMINISTRATION": 20,
+      "INVENTORY": 20,
+      "SALES": 20,
+      "SERVICE": 20
+    },
+    "VALIDATION": {
+      "ADMINISTRATION": 5,
+      "INVENTORY": 5,
+      "SALES": 5,
+      "SERVICE": 5
+    },
+    "TEST": {
+      "ADMINISTRATION": 5,
+      "INVENTORY": 5,
+      "SALES": 5,
+      "SERVICE": 5
+    }
+  },
+  "candidates": {
+    "tfidf_logistic_regression": {
+      "validation": {
+        "macro_f1": 0.28125,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "SALES": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 5
+          },
+          "SERVICE": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "ADMINISTRATION": {
+            "precision": 0.090909,
+            "recall": 0.2,
+            "f1": 0.125,
+            "support": 5
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            5,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            4,
+            1
+          ]
+        ]
+      },
+      "test": {
+        "macro_f1": 0.25,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 5
+          },
+          "SALES": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "SERVICE": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "ADMINISTRATION": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            5,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            5,
+            0
+          ]
+        ]
+      }
+    },
+    "tfidf_linear_svc": {
+      "validation": {
+        "macro_f1": 0.25,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "SALES": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 5
+          },
+          "SERVICE": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "ADMINISTRATION": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            5,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            5,
+            0
+          ]
+        ]
+      },
+      "test": {
+        "macro_f1": 0.25,
+        "per_class": {
+          "INVENTORY": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1": 1.0,
+            "support": 5
+          },
+          "SALES": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "SERVICE": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          },
+          "ADMINISTRATION": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": 5
+          }
+        },
+        "confusion_matrix_labels": [
+          "INVENTORY",
+          "SALES",
+          "SERVICE",
+          "ADMINISTRATION"
+        ],
+        "confusion_matrix": [
+          [
+            5,
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            0,
+            5
+          ],
+          [
+            0,
+            0,
+            5,
+            0
+          ]
+        ]
+      }
+    }
+  },
+  "selected_model": "tfidf_logistic_regression",
+  "selected_test_error_analysis": [
+    {
+      "activity_id": "act-syn-20261105-11-00",
+      "actual": "SALES",
+      "predicted": "ADMINISTRATION",
+      "note": "Penutupan toko memerlukan pemeriksaan total penjualan dan dokumen kasir. Catatan pada pemeriksaan awal, tahap peninjauan 1."
+    },
+    {
+      "activity_id": "act-syn-20261105-11-01",
+      "actual": "SALES",
+      "predicted": "ADMINISTRATION",
+      "note": "Penutupan toko memerlukan pemeriksaan total penjualan dan dokumen kasir. Catatan untuk tindak lanjut berikutnya, tahap peninjauan 2."
+    },
+    {
+      "activity_id": "act-syn-20261105-11-02",
+      "actual": "SALES",
+      "predicted": "ADMINISTRATION",
+      "note": "Penutupan toko memerlukan pemeriksaan total penjualan dan dokumen kasir. Catatan pada peninjauan harian, tahap peninjauan 3."
+    },
+    {
+      "activity_id": "act-syn-20261105-11-03",
+      "actual": "SALES",
+      "predicted": "ADMINISTRATION",
+      "note": "Penutupan toko memerlukan pemeriksaan total penjualan dan dokumen kasir. Catatan untuk tindak lanjut berikutnya, tahap peninjauan 4."
+    },
+    {
+      "activity_id": "act-syn-20261105-11-04",
+      "actual": "SALES",
+      "predicted": "ADMINISTRATION",
+      "note": "Penutupan toko memerlukan pemeriksaan total penjualan dan dokumen kasir. Catatan pada pemeriksaan awal, tahap peninjauan 5."
+    },
+    {
+      "activity_id": "act-syn-20261105-17-00",
+      "actual": "SERVICE",
+      "predicted": "ADMINISTRATION",
+      "note": "Perubahan urutan pemberhentian membutuhkan koordinasi dengan tim layanan. Catatan pada peninjauan harian, tahap peninjauan 1."
+    },
+    {
+      "activity_id": "act-syn-20261105-17-01",
+      "actual": "SERVICE",
+      "predicted": "ADMINISTRATION",
+      "note": "Perubahan urutan pemberhentian membutuhkan koordinasi dengan tim layanan. Catatan pada catatan operasional, tahap peninjauan 2."
+    },
+    {
+      "activity_id": "act-syn-20261105-17-02",
+      "actual": "SERVICE",
+      "predicted": "ADMINISTRATION",
+      "note": "Perubahan urutan pemberhentian membutuhkan koordinasi dengan tim layanan. Catatan untuk tindak lanjut berikutnya, tahap peninjauan 3."
+    },
+    {
+      "activity_id": "act-syn-20261105-17-03",
+      "actual": "SERVICE",
+      "predicted": "ADMINISTRATION",
+      "note": "Perubahan urutan pemberhentian membutuhkan koordinasi dengan tim layanan. Catatan pada peninjauan harian, tahap peninjauan 4."
+    },
+    {
+      "activity_id": "act-syn-20261105-17-04",
+      "actual": "SERVICE",
+      "predicted": "ADMINISTRATION",
+      "note": "Perubahan urutan pemberhentian membutuhkan koordinasi dengan tim layanan. Catatan pada pemeriksaan awal, tahap peninjauan 5."
+    },
+    {
+      "activity_id": "act-syn-20261105-23-00",
+      "actual": "ADMINISTRATION",
+      "predicted": "SERVICE",
+      "note": "Formulir operasional perlu dilengkapi sebelum proses dapat diteruskan. Catatan pada peninjauan harian, tahap peninjauan 1."
+    },
+    {
+      "activity_id": "act-syn-20261105-23-01",
+      "actual": "ADMINISTRATION",
+      "predicted": "SERVICE",
+      "note": "Formulir operasional perlu dilengkapi sebelum proses dapat diteruskan. Catatan sebelum layanan dimulai, tahap peninjauan 2."
+    },
+    {
+      "activity_id": "act-syn-20261105-23-02",
+      "actual": "ADMINISTRATION",
+      "predicted": "SERVICE",
+      "note": "Formulir operasional perlu dilengkapi sebelum proses dapat diteruskan. Catatan pada peninjauan harian, tahap peninjauan 3."
+    },
+    {
+      "activity_id": "act-syn-20261105-23-03",
+      "actual": "ADMINISTRATION",
+      "predicted": "SERVICE",
+      "note": "Formulir operasional perlu dilengkapi sebelum proses dapat diteruskan. Catatan untuk tindak lanjut berikutnya, tahap peninjauan 4."
+    },
+    {
+      "activity_id": "act-syn-20261105-23-04",
+      "actual": "ADMINISTRATION",
+      "predicted": "SERVICE",
+      "note": "Formulir operasional perlu dilengkapi sebelum proses dapat diteruskan. Catatan pada peninjauan harian, tahap peninjauan 5."
+    }
+  ],
+  "caveats": [
+    "Synthetic development data only; metrics do not establish production quality.",
+    "Predictions are category suggestions for human review and never mutate operational or financial data.",
+    "LinearSVC decision scores are not calibrated probabilities."
+  ]
+}
